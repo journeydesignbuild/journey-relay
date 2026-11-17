@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Journey Relay</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <strong>Journey Relay</strong>
+    <span id="phase" class="phase idle">Idle</span>
+    <span id="turnInfo" class="muted"></span>
+    <span class="spacer"></span>
+    <span id="version" class="muted small"></span>
+    <button id="updateBtn" class="mini hidden">Update available</button>
+    <button id="debugBtn" class="mini" title="Copy a report you can paste to Claude">Copy debug report</button>
+  </header>
+
+  <div id="app">
+    <div id="panes"></div>
+
+    <aside id="side">
+      <section class="card">
+        <div class="row head">
+          <strong>Relay</strong>
+          <button id="settingsBtn" class="icon" title="Settings" aria-label="Settings">⚙</button>
+        </div>
+        <label class="field">Task
+          <textarea id="task" rows="3" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
+        </label>
+        <div class="grid2">
+          <label class="field">Start with
+            <select id="startFrom"><option value="0">Web1</option><option value="1">Web2</option></select>
+          </label>
+          <label class="field">Max turns
+            <input id="maxTurns" type="number" min="1" max="100" value="20" />
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="pauseOnQ" /> Pause when an AI asks me a question</label>
+        <div class="row btns">
+          <button id="startBtn" class="primary">Start</button>
+          <button id="autoBtn">Automate</button>
+          <button id="pauseBtn">Pause</button>
+          <button id="stopBtn" class="danger">Stop</button>
+        </div>
+      </section>
+
+      <section id="pending" class="card pending hidden">
+        <div class="row head">
+          <strong id="pendingLabel">Web1 → Web2</strong>
+          <span class="muted small">Exact copy · nothing added</span>
+        </div>
+        <textarea id="pendingText" rows="7" readonly></textarea>
+        <div id="pendingNote" class="small accent hidden"></div>
+        <div class="row btns">
+          <button id="passBtn" class="primary">Pass</button>
+          <button id="editBtn">Edit</button>
+          <button id="pendingAutoBtn">Automate</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row head">
+          <strong>Where we are</strong>
+          <span class="row tight">
+            <span id="sumState" class="muted small"></span>
+            <button id="copySummary" class="mini">Copy</button>
+            <button id="exportBtn" class="mini">Export</button>
+            <button id="newBtn" class="mini">New</button>
+          </span>
+        </div>
+        <div id="summary" class="summary muted">Nothing yet. The moderator writes a short status here every 2 relays.</div>
+      </section>
+
+      <section class="card mod">
+        <div class="row head">
+          <strong>Moderator</strong>
+          <span class="muted small">Claude · sees both panes</span>
+        </div>
+        <div id="modChat"><div class="empty">Questions from the AIs show up here. Answer them, ask where things stand, or say "pause", "automate", "stop".</div></div>
+        <form id="modForm">
+          <textarea id="modInput" rows="2" placeholder="Message the moderator… (Enter to send)"></textarea>
+          <button class="primary" id="modSend">Send</button>
+        </form>
+      </section>
+    </aside>
+  </div>
+
+  <dialog id="settings">
+    <form id="settingsForm">
+      <h3>Settings</h3>
+      <label class="field">Anthropic API key (for the moderator and summary)
+        <input type="password" id="sApiKey" placeholder="sk-ant-..." />
+      </label>
+      <div class="grid2">
+        <label class="field">Moderator model <input id="sModModel" /></label>
+        <label class="field">Summary model <input id="sSumModel" /></label>
+      </div>
+      <div class="grid2">
+        <label class="field">Web1 start page <input id="sUrl0" /></label>
+        <label class="field">Web2 start page <input id="sUrl1" /></label>
+      </div>
+      <div class="grid3">
+        <label class="field">Done after (sec, with END OF TURN) <input id="sStable" type="number" min="1" /></label>
+        <label class="field">Done after (sec, no marker) <input id="sFallback" type="number" min="3" /></label>
+        <label class="field">Give up after (min) <input id="sTimeout" type="number" min="1" /></label>
+      </div>
+      <div class="grid2">
+        <label class="field">Update repo (owner/name) <input id="sRepo" /></label>
+        <label class="field">GitHub token (only if the repo is private) <input type="password" id="sToken" /></label>
+      </div>
+      <label class="field">Relay rules (sent once to each AI). {ME} and {OTHER} are filled in.
+        <textarea id="sFramework" rows="10"></textarea>
+      </label>
+      <button type="button" id="resetFramework" class="mini">Reset rules to default</button>
+      <label class="field">Taught sites (advanced)
+        <textarea id="sAdapters" rows="5" spellcheck="false"></textarea>
+      </label>
+      <div id="settingsErr" class="small warn"></div>
+      <div class="row btns">
+        <button type="button" id="cancelSettings">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

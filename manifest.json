@@ -1,0 +1,13 @@
+{
+  "version": "1.1.0",
+  "notes": "Debug report button and one-click updates.",
+  "files": [
+    "main.js",
+    "preload.js",
+    "renderer.js",
+    "index.html",
+    "styles.css",
+    "README.md",
+    "package.json"
+  ]
+}

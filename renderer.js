@@ -52,8 +52,8 @@ function adapterFor(p) {
   const h = hostOf(curUrl(p));
   if (!h) return null;
   const t = settings.adapters[h];
-  if (t) return { ...t, source: 'taught' };
   const pr = presetFor(h);
+  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), source: 'taught' };
   return pr ? { ...pr, source: 'preset' } : null;
 }
 function defaultAiName(i) {
@@ -332,6 +332,8 @@ function buildPanes() {
       p.url.blur();
     });
     $('.teach', sec).onclick = () => teach(p);
+    p.site.title = 'Right-click to forget a taught setup';
+    p.site.oncontextmenu = async (e) => { e.preventDefault(); const h = hostOf(curUrl(p)); if (settings.adapters[h] && confirm(`Forget the taught setup for ${h}?`)) { delete settings.adapters[h]; await saveSettings(); refreshPane(p); note(`${p.label}: back to the built-in setup.`); } };
     $('.test', sec).onclick = () => testPane(p);
     $('.skip', sec).onclick = () => { if (p.pick) { const pk = p.pick; p.pick = null; run(p, pgPickStop).catch(() => {}); pk.resolve(null); } };
     $('.cancel', sec).onclick = () => { if (p.pick) { const pk = p.pick; p.pick = null; run(p, pgPickStop).catch(() => {}); pk.reject(new Error('cancel')); } else hideBanner(p); };
@@ -371,11 +373,12 @@ async function teach(p) {
   if (R.running && !R.paused) { note('Pause the relay before teaching a site.', true); return; }
   const h = hostOf(curUrl(p));
   if (!h) return;
+  if (presetFor(h) && !confirm(`${presetFor(h).name} already has a built-in setup. Only teach it if Test fails. Teach anyway?`)) return;
   try {
     const inp = await pick(p, 'input', '<b>1/3</b> Click the box where you <b>type</b> messages. (Esc to cancel)', false);
     const rep = await pick(p, 'reply', `<b>2/3</b> Click inside the AI's latest <b>reply</b>. Works best with 2+ replies on screen.`, false);
     const snd = await pick(p, 'send', `Found ${rep.count} repl${rep.count === 1 ? 'y' : 'ies'}. Latest: “${esc(short(rep.preview, 70))}”<br><b>3/3</b> Click the <b>send</b> button, or Skip to use the Enter key.`, true);
-    settings.adapters[h] = { name: h, input: inp.selector, reply: rep.selector, send: snd ? snd.selector : '', busy: '' };
+    settings.adapters[h] = { name: h, input: inp.selector, reply: rep.selector, send: snd ? snd.selector : '', busy: '', override: !!presetFor(h) };
     await saveSettings();
     refreshPane(p);
     showBanner(p, `✓ Saved for ${esc(h)}. Click Test to double-check.`, { cancel: false });
@@ -462,11 +465,11 @@ async function sendAndWait(i, text, abortable = true) {
 // ---------- Marker protocol ----------
 function parseTurn(raw) {
   const t = String(raw || '').replace(/\r/g, '');
-  const start = /([A-Z0-9][A-Z0-9_\-]*(?: [A-Z0-9][A-Z0-9_\-]*){0,2}) RESPONSE (\d{1,4}) START\b/d.exec(t);
+  const start = /([A-Z0-9][A-Z0-9_\-]*(?: [A-Z0-9][A-Z0-9_\-]*){0,2}) RESPONSE (\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) START\b/d.exec(t);
   if (!start) return null;
   const from = start.indices[1][0];
   const after = start.index + start[0].length;
-  const endRe = /RESPONSE \d{1,4} END\b/g;
+  const endRe = /RESPONSE (?:\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) END\b/g;
   endRe.lastIndex = after;
   const end = endRe.exec(t);
   const respEnd = end ? end.index + end[0].length : -1;

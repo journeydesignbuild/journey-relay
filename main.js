@@ -11,6 +11,31 @@ app.userAgentFallback = app.userAgentFallback
 const FRAMEWORK = `RELAY RULES — follow exactly in every reply.
 You are {ME}, working with {OTHER} (another AI) and Justin (the user).
 Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
+{OTHER} only receives the text of your reply.
+
+Format EVERY reply exactly like this, in plain text:
+
+{ME} RESPONSE 001 START
+(your work)
+{ME} RESPONSE 001 END
+
+{ME} REQUESTS {OTHER}
+(what you need from {OTHER} next, usually a review. Write NONE if the work is done.)
+
+USER REQUEST
+(questions or clarifications for Justin. Write NONE if nothing.)
+
+END OF TURN
+
+Rules:
+- Number your responses 001, 002, 003 and so on, counting up each reply.
+- Put ALL content directly in the reply text, including complete code. Do NOT use files, downloads, canvas, artifacts, attachments or links: {OTHER} cannot see them.
+- Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
+- When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
+- Always finish with END OF TURN.`;
+const OLD_FRAMEWORKS = [`RELAY RULES — follow exactly in every reply.
+You are {ME}, working with {OTHER} (another AI) and Justin (the user).
+Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
 
 Format EVERY reply exactly like this, in plain text:
 
@@ -30,7 +55,7 @@ Rules:
 - Number your responses 001, 002, 003 and so on, in order.
 - Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
 - When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
-- Always finish with END OF TURN.`;
+- Always finish with END OF TURN.`];
 
 const DEFAULTS = {
   apiKey: '',
@@ -52,7 +77,9 @@ const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 
 function loadSettings() {
   try {
-    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
+    const s = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
+    if (OLD_FRAMEWORKS.includes(s.framework)) s.framework = FRAMEWORK; // untouched old rules -> new default
+    return s;
   } catch {
     return { ...DEFAULTS };
   }

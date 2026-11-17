@@ -1,5 +1,5 @@
 // Journey Relay — main process
-const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -90,9 +90,9 @@ function saveSettings(s) {
   fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2));
 }
 
-let win;
-function createWindow() {
-  win = new BrowserWindow({
+let firstWindow = true;
+function createWindow(fresh = false) {
+  const win = new BrowserWindow({
     width: 1600,
     height: 1000,
     title: 'Journey Relay',
@@ -104,10 +104,27 @@ function createWindow() {
       webviewTag: true
     }
   });
-  win.loadFile('index.html');
-  if (process.env.JP_SELFTEST) win.webContents.on('console-message', (_e, _l, m) => { if (String(m).startsWith('[dbg]')) console.log(m); });
-  if (process.env.JP_SELFTEST) require(path.join(__dirname, 'test', 'selftest.js'))(win, app);
+  win.loadFile('index.html', fresh ? { query: { fresh: '1' } } : undefined);
+  if (process.env.JP_SELFTEST && firstWindow) {
+    win.webContents.on('console-message', (_e, _l, m) => { if (String(m).startsWith('[dbg]')) console.log(m); });
+    require(path.join(__dirname, 'test', 'selftest.js'))(win, app);
+  }
+  firstWindow = false;
+  return win;
 }
+
+const menuTemplate = [
+  { label: 'File', submenu: [
+    { label: 'New relay window', accelerator: 'CmdOrCtrl+N', click: () => createWindow(true) },
+    { type: 'separator' },
+    { role: 'close' },
+    { role: 'quit' }
+  ] },
+  { role: 'editMenu' },
+  { role: 'viewMenu' },
+  { role: 'windowMenu' }
+];
+ipcMain.handle('window:new', () => { createWindow(true); return true; });
 
 // Embedded sites get no Node access and no preload
 app.on('web-contents-created', (_e, contents) => {
@@ -179,8 +196,29 @@ ipcMain.handle('update:apply', async () => {
     return { ok: true, version: remote.version };
   } catch (e) { return { error: e.message }; }
 });
+// ---------- Sessions (autosaved, one file per run) ----------
+const sessionsDir = () => path.join(app.getPath('userData'), 'sessions');
+const safeId = (id) => String(id || '').replace(/[^A-Za-z0-9_-]/g, '');
+ipcMain.handle('sessions:list', () => {
+  try {
+    return fs.readdirSync(sessionsDir()).filter((f) => f.endsWith('.json')).map((f) => {
+      try { const j = JSON.parse(fs.readFileSync(path.join(sessionsDir(), f), 'utf8')); return { id: j.id, created: j.created, updated: j.updated, title: String(j.title || j.task || '').slice(0, 90), task: String(j.task || '').slice(0, 90) }; } catch { return null; }
+    }).filter(Boolean).sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+  } catch { return []; }
+});
+ipcMain.handle('sessions:load', (_e, id) => {
+  try { return JSON.parse(fs.readFileSync(path.join(sessionsDir(), safeId(id) + '.json'), 'utf8')); } catch { return null; }
+});
+ipcMain.handle('sessions:save', (_e, obj) => {
+  if (!obj || !safeId(obj.id)) return false;
+  fs.mkdirSync(sessionsDir(), { recursive: true });
+  const f = path.join(sessionsDir(), safeId(obj.id) + '.json');
+  fs.writeFileSync(f + '.tmp', JSON.stringify(obj));
+  fs.renameSync(f + '.tmp', f);
+  return true;
+});
 ipcMain.handle('app:info', () => ({ version: localManifest().version, platform: `${process.platform} ${process.arch}`, electron: process.versions.electron }));
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => { Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate)); createWindow(false); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(false); });

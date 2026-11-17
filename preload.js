@@ -9,5 +9,9 @@ contextBridge.exposeInMainWorld('api', {
   call: (body) => ipcRenderer.invoke('claude:call', body),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   applyUpdate: () => ipcRenderer.invoke('update:apply'),
-  info: () => ipcRenderer.invoke('app:info')
+  info: () => ipcRenderer.invoke('app:info'),
+  listSessions: () => ipcRenderer.invoke('sessions:list'),
+  loadSession: (id) => ipcRenderer.invoke('sessions:load', id),
+  saveSession: (o) => ipcRenderer.invoke('sessions:save', o),
+  newWindow: () => ipcRenderer.invoke('window:new')
 });

@@ -104,6 +104,10 @@ module.exports = (win, app) => {
         chat: [...document.querySelectorAll('#modChat .m')].map(m => m.className + ': ' + m.textContent.replace(/\\n/g, ' / ')),
         turn: R.turn
       })`);
+      await sleep(1500);
+      console.log('sessions: ' + JSON.stringify(await js('window.api.listSessions()')));
+      await js(`(async () => { const l = await window.api.listSessions(); R.task = ''; R.lastFrom = null; questions.length = 0; logEntries.length = 0; chatLog.length = 0; const j = await window.api.loadSession(l[0].id); applySession(j, false); return true; })()`);
+      console.log('restored: ' + await js('R.task + " | lastFrom=" + R.lastFrom + " | log=" + logEntries.length + " | chat=" + chatLog.length + " | sel=" + $("#sessionSel").options.length'));
       console.log('=== CONTINUE TEST ===');
       console.log('buttons: ' + await js(`$('#startBtn').textContent + ' / cont hidden=' + $('#contBtn').classList.contains('hidden')`));
       await js(`runTool('answer_questions', { answer: 'Use 12.531 ft.', to: 'both' })`);
@@ -111,6 +115,11 @@ module.exports = (win, app) => {
       await sleep(1000);
       for (let k = 0; k < 120; k++) { if (!(await js('R.running'))) break; await sleep(500); }
       console.log('after continue: ' + JSON.stringify(await js(`[...document.querySelectorAll('#modChat .m.sys')].slice(-4).map(m => m.textContent)`)));
+      await js('window.api.newWindow()'); await sleep(4000);
+      const wins = require('electron').BrowserWindow.getAllWindows();
+      const other = wins.find((w) => w !== win);
+      console.log('windows: ' + wins.length + ' | second window task="' + (other ? await other.webContents.executeJavaScript('R.task') : 'n/a') + '" title=' + (other ? await other.webContents.executeJavaScript('document.title') : '') + ' | first title=' + await js('document.title'));
+      if (other) other.close();
       const recvA = await js(`panes[0].wv.executeJavaScript('window.received')`);
       const recvB = await js(`panes[1].wv.executeJavaScript('window.received')`);
       console.log('=== PENDING (first hop, manual) ===\n' + pendingText.slice(-400));

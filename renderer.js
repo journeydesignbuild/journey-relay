@@ -285,7 +285,7 @@ function pgPick(kind) {
 }
 
 // ---------- Panes ----------
-function buildPanes() {
+function buildPanes(startUrls) {
   const host = $('#panes');
   [0, 1].forEach((i) => {
     const sec = document.createElement('section');
@@ -309,7 +309,8 @@ function buildPanes() {
     const wv = document.createElement('webview');
     wv.setAttribute('partition', 'persist:journey');
     wv.setAttribute('allowpopups', '');
-    wv.setAttribute('src', settings.urls[i] || 'https://www.google.com');
+    const su = startUrls && /^https?:/.test(startUrls[i] || '') ? startUrls[i] : settings.urls[i];
+    wv.setAttribute('src', su || 'https://www.google.com');
     $('.pane-body', sec).prepend(wv);
     const p = { i, label: label(i), sec, wv, url: $('.url', sec), nameInput: $('.ainame', sec), site: $('.site', sec), banner: $('.banner', sec), pick: null };
     panes.push(p);
@@ -341,6 +342,7 @@ function buildPanes() {
 }
 function refreshPane(p) {
   const u = curUrl(p);
+  if (R.task) autosave();
   if (document.activeElement !== p.url) p.url.value = u;
   const a = adapterFor(p);
   p.site.textContent = a ? (a.source === 'taught' ? 'Taught ✓' : `${a.name} ✓`) : 'Not set up';
@@ -499,7 +501,8 @@ function parseTurn(raw) {
   };
 }
 function intro(i) {
-  return settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i)) + '\n\nTASK:\n' + R.task;
+  const rules = settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i));
+  return R.task ? rules + '\n\nTASK:\n' + R.task : rules;
 }
 
 // ---------- Relay engine ----------
@@ -577,14 +580,19 @@ async function handleReply(i, text) {
 async function runRelay(task, startIdx, resume = false) {
   if (R.running) return 'Relay is already running.';
   if (resume) {
-    if (!R.task || R.lastFrom === null) { note('Nothing to continue yet. Type a task and click Start.', true); return 'Nothing to continue.'; }
+    // Works without a task too: if we don't know who spoke last, use the "Start with" pane's latest reply
+    if (R.lastFrom === null) { R.lastFrom = +$('#startFrom').value; R.introduced = [true, true]; }
   } else {
     task = String(task || '').trim();
     if (!task) { note('Type a task first.', true); return 'No task given.'; }
   }
   for (const i of [0, 1]) if (!adapterFor(panes[i])) { note(`${label(i)} isn't set up for this site. Click Teach.`, true); return `${label(i)} not set up.`; }
   if (resume) Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, complete: [false, false], resumeFrom: null });
-  else Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, task, introduced: [false, false], complete: [false, false], queued: [[], []], resumeFrom: null, lastFrom: null });
+  else {
+    const reuse = session && !R.task && !logEntries.length; // untitled session with only moderator chat
+    Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, task, introduced: [false, false], complete: [false, false], queued: reuse ? R.queued : [[], []], resumeFrom: null, lastFrom: null });
+    if (!reuse) { logEntries.length = 0; questions.length = 0; summaryText = ''; renderSummary(); chatLog.length = 0; startNewSession(); }
+  }
   if (!resume) $('#task').value = task;
   updateControls();
   try {
@@ -631,6 +639,7 @@ async function runRelay(task, startIdx, resume = false) {
   } finally {
     R.running = false; R.paused = false; R.stopReq = false; R.pending = null;
     hidePending();
+    autosave();
     setPhase('Idle');
     updateControls();
     summarizeSoon();
@@ -660,6 +669,7 @@ function renderQuestions() {}
 function addLog(e) {
   e.time = new Date();
   logEntries.push(e);
+  autosave();
 }
 function note(msg, warn) {
   if (warn) recordError(msg);
@@ -688,9 +698,8 @@ function setPhase(t) {
 }
 function updateControls() {
   $('#startBtn').disabled = R.running;
-  const canResume = !R.running && !!R.task && R.lastFrom !== null;
-  $('#contBtn').classList.toggle('hidden', !canResume);
-  $('#startBtn').textContent = canResume ? 'New run' : 'Start';
+  $('#contBtn').disabled = R.running;
+  $('#startBtn').textContent = R.task && !R.running ? 'New run' : 'Start';
   $('#pauseBtn').disabled = !R.running;
   $('#stopBtn').disabled = !R.running;
   $('#pauseBtn').textContent = R.paused ? 'Resume' : 'Pause';
@@ -722,6 +731,7 @@ async function summarize() {
   if (!res.error) {
     summaryText = res.data.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
     renderSummary();
+    autosave();
   }
   if (sumAgain) { sumAgain = false; summarizeSoon(); }
 }
@@ -772,7 +782,7 @@ How it works: each AI replies in a fixed format (NAME RESPONSE ### START / END, 
 
 Your job: Justin messages you here, usually on the go. Keep replies short and plain.
 - Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
-- If the relay is idle (finished or stopped) and Justin answers a question or says to keep going, record the answer and then call relay_control continue so the work picks up where it left off with his answer attached.
+- If the relay is idle (finished or stopped) and Justin answers a question or says to keep going, record the answer and then call relay_control continue so the work picks up where it left off with his answer attached. Continue works with or without a task.
 - Never change relayed text unless Justin asks (edit_pending).
 - Control the relay when he asks (start, pause, resume, stop, automate, manual, pass).
 - When he asks where things stand, answer from the summary and transcript.
@@ -803,7 +813,7 @@ async function runTool(name, x) {
       const ids = Array.isArray(x.question_ids) ? x.question_ids : [];
       targets.forEach((i) => R.queued[i].push(x.answer));
       ids.forEach((id) => { const q = questions.find((q) => q.id === id); if (q) q.answered = true; });
-      renderQuestions(); refreshPendingNote();
+      renderQuestions(); refreshPendingNote(); autosave();
       addLog({ who: 'You', to: targets.map(label).join(' + '), text: x.answer, kind: 'answer' });
       if (x.deliver_now) {
         if (R.running) return { queued: true, note: 'Relay is running, so it goes out with the next hop to each side.' };
@@ -875,6 +885,7 @@ function md(s) {
   return h.replace(/\n/g, '<br>');
 }
 function modMsg(kind, text) {
+  if (!restoring) { chatLog.push({ kind, text }); autosave(); }
   const box = $('#modChat');
   const empty = $('.empty', box); if (empty) empty.remove();
   const d = document.createElement('div');
@@ -983,9 +994,11 @@ function exportTranscript() {
 }
 function newSession() {
   if (R.running) { note('Stop the relay before starting a new session.', true); return; }
+  session = null; chatLog.length = 0; $('#task').value = '';
   logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
   R.turn = 0; R.task = ''; R.queued = [[], []]; R.lastFrom = null; R.introduced = [false, false];
   updateControls();
+  refreshSessionList();
   renderSummary();
   $('#modChat').innerHTML = '<div class="empty">New session.</div>';
 }
@@ -1038,12 +1051,85 @@ async function applyUpdate() {
   else b.textContent = `Restarting on v${r.version}…`;
 }
 
+// ---------- Sessions: autosaved with a date, restored on restart ----------
+let session = null;          // { id, created }
+const chatLog = [];          // moderator chat, for restoring
+let restoring = false;
+let saveTimer = null;
+function makeSessionId() {
+  const d = new Date(), z = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+}
+function startNewSession() { session = { id: makeSessionId(), created: new Date().toISOString() }; }
+function snapshot() {
+  return {
+    id: session.id, created: session.created, updated: new Date().toISOString(),
+    title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued,
+    questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
+    logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
+  };
+}
+const sessionTitle = () => R.task || (chatLog.find((m) => m.kind === 'you') || {}).text || 'Untitled';
+const hasActivity = () => !!R.task || logEntries.length > 0 || chatLog.some((m) => m.kind === 'you');
+function autosave() {
+  if (restoring || !hasActivity()) return;
+  if (!session) startNewSession();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => { await window.api.saveSession(snapshot()); refreshSessionList(); }, 700);
+}
+function sessionLabel(x) {
+  const d = new Date(x.created || x.updated);
+  const when = isNaN(d) ? x.id : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return `${when} · ${short(x.title || x.task || 'Untitled', 50)}`;
+}
+async function refreshSessionList() {
+  const list = await window.api.listSessions();
+  const sel = $('#sessionSel');
+  sel.innerHTML = '<option value="">New session</option>' + list.map((x) => `<option value="${esc(x.id)}">${esc(sessionLabel(x))}</option>`).join('');
+  sel.value = session && list.some((x) => x.id === session.id) ? session.id : '';
+  const cur = session && list.find((x) => x.id === session.id);
+  document.title = cur ? `Journey Relay · ${sessionLabel(cur)}` : 'Journey Relay';
+}
+function applySession(j, loadUrls) {
+  restoring = true;
+  session = { id: j.id, created: j.created };
+  R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
+  R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
+  questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
+  logEntries.length = 0; (j.logEntries || []).forEach((e) => logEntries.push({ ...e, time: new Date(e.time) }));
+  summaryText = j.summaryText || ''; renderSummary();
+  modHistory.length = 0; (j.modHistory || []).forEach((m) => modHistory.push(m));
+  $('#modChat').innerHTML = '';
+  chatLog.length = 0;
+  (j.chatLog || []).forEach((m) => { modMsg(m.kind, m.text); chatLog.push(m); });
+  if (!chatLog.length) $('#modChat').innerHTML = '<div class="empty">Session restored.</div>';
+  $('#task').value = R.task;
+  if (loadUrls) (j.urls || []).forEach((u, i) => { if (u && /^https?:/.test(u) && u !== curUrl(panes[i])) { try { panes[i].wv.loadURL(u); } catch {} } });
+  restoring = false;
+  updateControls();
+}
+async function switchSession(id) {
+  if (R.running) { note('Stop the relay before switching sessions.', true); refreshSessionList(); return; }
+  if (!id) { newSession(); return; }
+  const j = await window.api.loadSession(id);
+  if (!j) { note('Could not open that session.', true); return; }
+  applySession(j, true);
+  refreshSessionList();
+}
+
 // ---------- Wire up ----------
 async function init() {
   settings = await window.api.getSettings();
   settings.adapters = settings.adapters || {};
   settings.names = settings.names || ['', ''];
-  buildPanes();
+  const fresh = new URLSearchParams(location.search).get('fresh') === '1';
+  const list = fresh ? [] : await window.api.listSessions();
+  const last = list.length ? await window.api.loadSession(list[0].id) : null;
+  buildPanes(last && last.urls);
+  if (last) applySession(last, false);
+  $('#sessionSel').onchange = (e) => switchSession(e.target.value);
+  $('#newWinBtn').onclick = () => window.api.newWindow();
+  refreshSessionList();
   $('#startBtn').onclick = () => runRelay($('#task').value, +$('#startFrom').value);
   $('#contBtn').onclick = () => runRelay('', 0, true);
   $('#autoBtn').onclick = () => setAuto(!R.auto);

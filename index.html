@@ -11,6 +11,7 @@
     <span id="phase" class="phase idle">Idle</span>
     <span id="turnInfo" class="muted"></span>
     <span class="spacer"></span>
+    <button id="newWinBtn" class="mini" title="Open another relay window (Ctrl+N)">+ New window</button>
     <span id="version" class="muted small"></span>
     <button id="updateBtn" class="mini hidden">Update available</button>
     <button id="debugBtn" class="mini" title="Copy a report you can paste to Claude">Copy debug report</button>
@@ -25,6 +26,9 @@
           <strong>Relay</strong>
           <button id="settingsBtn" class="icon" title="Settings" aria-label="Settings">⚙</button>
         </div>
+        <label class="field">Session
+          <select id="sessionSel"><option value="">New session</option></select>
+        </label>
         <label class="field">Task
           <textarea id="task" rows="3" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
         </label>
@@ -39,7 +43,7 @@
         <label class="check"><input type="checkbox" id="pauseOnQ" /> Pause when an AI asks me a question</label>
         <div class="row btns">
           <button id="startBtn" class="primary">Start</button>
-          <button id="contBtn" class="primary hidden">Continue</button>
+          <button id="contBtn">Continue</button>
           <button id="autoBtn">Automate</button>
           <button id="pauseBtn">Pause</button>
           <button id="stopBtn" class="danger">Stop</button>

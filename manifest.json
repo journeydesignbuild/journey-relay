@@ -1,6 +1,6 @@
 {
-  "version": "1.1.0",
-  "notes": "Debug report button and one-click updates.",
+  "version": "1.1.1",
+  "notes": "Longer default timeouts; smarter Teach (ignores temporary and auto-generated class names).",
   "files": [
     "main.js",
     "preload.js",

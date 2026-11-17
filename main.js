@@ -42,8 +42,8 @@ const DEFAULTS = {
   adapters: {},
   framework: FRAMEWORK,
   stableSec: 2,
-  fallbackSec: 12,
-  timeoutMin: 8,
+  fallbackSec: 90,
+  timeoutMin: 60,
   updateRepo: 'journeydesignbuild/journey-relay',
   githubToken: ''
 };

@@ -192,7 +192,9 @@ function pgPick(kind) {
   if (window.__jpPick) window.__jpPick.cleanup();
   const out = (o) => console.log('__JP_PICK__' + JSON.stringify(o));
   const count = (s) => { try { return document.querySelectorAll(s).length; } catch (e) { return 0; } };
-  const okCls = (c) => /^[A-Za-z_][\w-]*$/.test(c) && !/\d{3,}/.test(c) && c.length < 40;
+  const okCls = (c) => /^[A-Za-z_][\w-]*$/.test(c) && !/\d{3,}/.test(c) && c.length < 40
+    && !/(focus|active|hover|select|open|visible|hidden|disabled|empty|placeholder)/i.test(c)
+    && !/[-_](?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])[A-Za-z0-9]{5,8}$/.test(c);
   const tag = (el) => el.tagName.toLowerCase();
   const q = (v) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const txt = (el) => (el.innerText || '').trim();
@@ -228,7 +230,7 @@ function pgPick(kind) {
   };
   const group = (el) => {
     const chain = [];
-    for (let n = el; n && n !== document.body && chain.length < 15; n = n.parentElement) chain.push(n);
+    for (let n = el; n && n !== document.body && chain.length < 40; n = n.parentElement) chain.push(n);
     for (const n of chain) {
       for (const s of attrSels(n).filter((s) => s.includes('[data-'))) {
         const c = count(s);

@@ -41,7 +41,7 @@ let summaryText = '';
 const R = {
   running: false, paused: false, stopReq: false, auto: false, turn: 0, phase: 'Idle',
   pending: null, task: '', introduced: [false, false], complete: [false, false],
-  queued: [[], []], resumeFrom: null
+  queued: [[], []], resumeFrom: null, lastFrom: null
 };
 
 // ---------- Helpers ----------
@@ -553,7 +553,7 @@ async function handleReply(i, text) {
   if (!p) {
     addLog({ who: label(i), text, kind: 'reply', turn: R.turn });
     note(`${label(i)} didn't use the relay format. Asking it to resend.`, true);
-    const fix = `Your last reply did not follow the RELAY RULES. Resend the same content in the required format: start with "${aiName(i)} RESPONSE ### START" and finish with "END OF TURN".`;
+    const fix = `Your last reply did not follow the RELAY RULES. Resend the same content in the required format: start with "${aiName(i)} RESPONSE <number> START" and finish with "END OF TURN".`;
     addLog({ who: 'App', to: label(i), text: fix, kind: 'fix' });
     text = await sendAndWait(i, fix);
     p = parseTurn(text);
@@ -567,27 +567,41 @@ async function handleReply(i, text) {
     }
   }
   addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: p.num });
+  R.lastFrom = i;
   R.complete[i] = !!p.complete;
   if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
   if (R.turn > 0 && R.turn % 2 === 0) summarizeSoon();
   return p;
 }
 
-async function runRelay(task, startIdx) {
+async function runRelay(task, startIdx, resume = false) {
   if (R.running) return 'Relay is already running.';
-  task = String(task || '').trim();
-  if (!task) { note('Type a task first.', true); return 'No task given.'; }
+  if (resume) {
+    if (!R.task || R.lastFrom === null) { note('Nothing to continue yet. Type a task and click Start.', true); return 'Nothing to continue.'; }
+  } else {
+    task = String(task || '').trim();
+    if (!task) { note('Type a task first.', true); return 'No task given.'; }
+  }
   for (const i of [0, 1]) if (!adapterFor(panes[i])) { note(`${label(i)} isn't set up for this site. Click Teach.`, true); return `${label(i)} not set up.`; }
-  Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, task, introduced: [false, false], complete: [false, false], queued: [[], []], resumeFrom: null });
-  $('#task').value = task;
+  if (resume) Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, complete: [false, false], resumeFrom: null });
+  else Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, task, introduced: [false, false], complete: [false, false], queued: [[], []], resumeFrom: null, lastFrom: null });
+  if (!resume) $('#task').value = task;
   updateControls();
   try {
-    let from = startIdx;
-    const first = intro(from);
-    R.introduced[from] = true;
-    addLog({ who: 'You', to: label(from), text: first, kind: 'setup' });
-    let reply = await sendAndWait(from, first);
-    let parsed = await handleReply(from, reply);
+    let from, parsed, reply;
+    if (resume) {
+      from = R.lastFrom;
+      parsed = parseTurn(await readLatest(from));
+      if (!parsed) throw new Error(`${label(from)}'s latest reply isn't in the relay format, so there's nothing to pass on.`);
+      note(`Continuing from ${label(from)}${R.queued[1 - from].length ? ' with your answer' : ''}.`);
+    } else {
+      from = startIdx;
+      const first = intro(from);
+      R.introduced[from] = true;
+      addLog({ who: 'You', to: label(from), text: first, kind: 'setup' });
+      reply = await sendAndWait(from, first);
+      parsed = await handleReply(from, reply);
+    }
     while (R.turn < maxTurns()) {
       await gate();
       if (R.resumeFrom !== null) {
@@ -625,7 +639,16 @@ async function runRelay(task, startIdx) {
 }
 
 // ---------- Questions ----------
+function similarText(a, b) {
+  const words = (x) => new Set(norm(x).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(' ').filter((w) => w.length > 2));
+  const A = words(a), B = words(b);
+  if (!A.size || !B.size) return false;
+  let hit = 0; A.forEach((w) => { if (B.has(w)) hit++; });
+  return hit / Math.min(A.size, B.size) >= 0.6;
+}
 function addQuestion(i, num, text) {
+  const dup = questions.find((q) => !q.answered && q.from === i && similarText(q.text, text));
+  if (dup) { dup.text = text; dup.num = num; return; } // same question asked again: don't repeat it
   const q = { id: questions.length + 1, from: i, ai: aiName(i), num, text, answered: false };
   questions.push(q);
   modMsg('q', `Q${q.id} · ${q.ai} asks:\n${text}`);
@@ -665,6 +688,9 @@ function setPhase(t) {
 }
 function updateControls() {
   $('#startBtn').disabled = R.running;
+  const canResume = !R.running && !!R.task && R.lastFrom !== null;
+  $('#contBtn').classList.toggle('hidden', !canResume);
+  $('#startBtn').textContent = canResume ? 'New run' : 'Start';
   $('#pauseBtn').disabled = !R.running;
   $('#stopBtn').disabled = !R.running;
   $('#pauseBtn').textContent = R.paused ? 'Resume' : 'Pause';
@@ -716,9 +742,9 @@ const MOD_TOOLS = [
       deliver_now: { type: 'boolean', description: 'Type it into the site(s) right away. Only works when the relay is not running.' }
     }, required: ['answer'] } },
   { name: 'relay_control',
-    description: 'Control the relay. start (optional task), pause, resume, stop, automate (auto-pass every hop), manual (approve each hop), pass (send the hop waiting for approval).',
+    description: 'Control the relay. start (new run with a task), continue (pick up the finished/stopped session where it left off, carrying queued answers), pause, resume, stop, automate (auto-pass every hop), manual (approve each hop), pass (send the hop waiting for approval).',
     input_schema: { type: 'object', properties: {
-      action: { type: 'string', enum: ['start', 'pause', 'resume', 'stop', 'automate', 'manual', 'pass'] },
+      action: { type: 'string', enum: ['start', 'continue', 'pause', 'resume', 'stop', 'automate', 'manual', 'pass'] },
       task: { type: 'string' }, start_pane: { type: 'integer', enum: [1, 2] }
     }, required: ['action'] } },
   { name: 'read_pane', description: 'Read the latest reply currently shown in a pane.',
@@ -745,7 +771,8 @@ Web1 = ${aiName(0)} (${curUrl(panes[0])}). Web2 = ${aiName(1)} (${curUrl(panes[1
 How it works: each AI replies in a fixed format (NAME RESPONSE ### START / END, a NAME REQUESTS OTHER block, a USER REQUEST block, END OF TURN). The app copies the RESPONSE and REQUESTS blocks word-for-word to the other AI. Questions from USER REQUEST blocks are shown to Justin in this chat (as Q1, Q2…) and listed below.
 
 Your job: Justin messages you here, usually on the go. Keep replies short and plain.
-- Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Use deliver_now=true only when the relay is not running.
+- Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
+- If the relay is idle (finished or stopped) and Justin answers a question or says to keep going, record the answer and then call relay_control continue so the work picks up where it left off with his answer attached.
 - Never change relayed text unless Justin asks (edit_pending).
 - Control the relay when he asks (start, pause, resume, stop, automate, manual, pass).
 - When he asks where things stand, answer from the summary and transcript.
@@ -794,6 +821,10 @@ async function runTool(name, x) {
           if (R.running) return { error: 'Already running' };
           runRelay(x.task || $('#task').value, x.start_pane ? x.start_pane - 1 : +$('#startFrom').value);
           return { started: true };
+        case 'continue':
+          if (R.running) return { error: 'Already running' };
+          runRelay('', 0, true);
+          return { continuing: true };
         case 'pause': if (!R.running) return { error: 'Not running' }; setPaused(true); return { paused: true };
         case 'resume': if (!R.running) return { error: 'Not running' }; setPaused(false); return { resumed: true };
         case 'stop': stopRelay(); return { stopped: true };
@@ -953,7 +984,8 @@ function exportTranscript() {
 function newSession() {
   if (R.running) { note('Stop the relay before starting a new session.', true); return; }
   logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
-  R.turn = 0; R.task = ''; R.queued = [[], []];
+  R.turn = 0; R.task = ''; R.queued = [[], []]; R.lastFrom = null; R.introduced = [false, false];
+  updateControls();
   renderSummary();
   $('#modChat').innerHTML = '<div class="empty">New session.</div>';
 }
@@ -1013,6 +1045,7 @@ async function init() {
   settings.names = settings.names || ['', ''];
   buildPanes();
   $('#startBtn').onclick = () => runRelay($('#task').value, +$('#startFrom').value);
+  $('#contBtn').onclick = () => runRelay('', 0, true);
   $('#autoBtn').onclick = () => setAuto(!R.auto);
   $('#pendingAutoBtn').onclick = () => setAuto(!R.auto);
   $('#pauseBtn').onclick = () => setPaused(!R.paused);

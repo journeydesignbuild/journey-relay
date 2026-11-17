@@ -104,6 +104,13 @@ module.exports = (win, app) => {
         chat: [...document.querySelectorAll('#modChat .m')].map(m => m.className + ': ' + m.textContent.replace(/\\n/g, ' / ')),
         turn: R.turn
       })`);
+      console.log('=== CONTINUE TEST ===');
+      console.log('buttons: ' + await js(`$('#startBtn').textContent + ' / cont hidden=' + $('#contBtn').classList.contains('hidden')`));
+      await js(`runTool('answer_questions', { answer: 'Use 12.531 ft.', to: 'both' })`);
+      js(`runRelay('', 0, true)`);
+      await sleep(1000);
+      for (let k = 0; k < 120; k++) { if (!(await js('R.running'))) break; await sleep(500); }
+      console.log('after continue: ' + JSON.stringify(await js(`[...document.querySelectorAll('#modChat .m.sys')].slice(-4).map(m => m.textContent)`)));
       const recvA = await js(`panes[0].wv.executeJavaScript('window.received')`);
       const recvB = await js(`panes[1].wv.executeJavaScript('window.received')`);
       console.log('=== PENDING (first hop, manual) ===\n' + pendingText.slice(-400));

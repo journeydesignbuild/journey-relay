@@ -1,5 +1,5 @@
 // Journey Relay — main process
-const { app, BrowserWindow, ipcMain, clipboard, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -100,10 +100,10 @@ function createWindow(fresh = false) {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webviewTag: true
+      nodeIntegration: false
     }
   });
+  setupPanes(win);
   win.loadFile('index.html', fresh ? { query: { fresh: '1' } } : undefined);
   if (process.env.JP_SELFTEST && firstWindow) {
     win.webContents.on('console-message', (_e, _l, m) => { if (String(m).startsWith('[dbg]')) console.log(m); });
@@ -112,6 +112,49 @@ function createWindow(fresh = false) {
   firstWindow = false;
   return win;
 }
+
+// ---------- Panes: two native browser views per window (smooth like Chrome) ----------
+const panesByWindow = new Map(); // renderer webContents id -> [view, view]
+function setupPanes(win) {
+  const ownerId = win.webContents.id;
+  const views = [0, 1].map((i) => {
+    const v = new WebContentsView({ webPreferences: { partition: 'persist:journey', contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    v.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    win.contentView.addChildView(v);
+    const wc = v.webContents;
+    const send = (type, data = {}) => { if (!win.isDestroyed()) win.webContents.send('pane:event', { i, type, ...data }); };
+    const nav = () => send('nav', { url: wc.getURL(), canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() });
+    wc.on('dom-ready', () => { nav(); send('dom-ready'); });
+    wc.on('did-navigate', nav);
+    wc.on('did-navigate-in-page', nav);
+    wc.on('console-message', (e, _level, message) => send('console', { message: message ?? e.message }));
+    wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => { if (isMainFrame) send('fail', { code, desc, url }); });
+    wc.on('render-process-gone', () => send('gone'));
+    wc.setWindowOpenHandler(() => ({ action: 'allow' })); // sign-in popups
+    return v;
+  });
+  panesByWindow.set(ownerId, views);
+  win.on('closed', () => { panesByWindow.delete(ownerId); views.forEach((v) => { try { v.webContents.close(); } catch {} }); });
+}
+ipcMain.handle('pane:call', async (e, i, method, args = []) => {
+  const views = panesByWindow.get(e.sender.id);
+  const v = views && views[i];
+  if (!v) throw new Error('pane not found');
+  const wc = v.webContents;
+  switch (method) {
+    case 'load': return wc.loadURL(args[0]).then(() => true, () => false);
+    case 'exec': return wc.executeJavaScript(args[0], true);
+    case 'back': if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true;
+    case 'forward': if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true;
+    case 'reload': wc.reload(); return true;
+    case 'focus': wc.focus(); return true;
+    case 'input': wc.sendInputEvent(args[0]); return true;
+    case 'insertText': await wc.insertText(args[0]); return true;
+    case 'bounds': v.setBounds(args[0]); return true;
+    case 'visible': v.setVisible(!!args[0]); return true;
+  }
+  throw new Error('unknown pane method ' + method);
+});
 
 const menuTemplate = [
   { label: 'File', submenu: [

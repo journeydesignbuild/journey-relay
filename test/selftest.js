@@ -120,6 +120,9 @@ module.exports = (win, app) => {
       const other = wins.find((w) => w !== win);
       console.log('windows: ' + wins.length + ' | second window task="' + (other ? await other.webContents.executeJavaScript('R.task') : 'n/a') + '" title=' + (other ? await other.webContents.executeJavaScript('document.title') : '') + ' | first title=' + await js('document.title'));
       if (other) other.close();
+      const kids = win.contentView.children;
+      console.log('views: ' + kids.length + ' bounds=' + JSON.stringify(kids.map((v) => v.getBounds())));
+      const img0 = await kids[0].webContents.capturePage(); require('fs').writeFileSync('/tmp/jp-view0.png', img0.toPNG());
       const recvA = await js(`panes[0].wv.executeJavaScript('window.received')`);
       const recvB = await js(`panes[1].wv.executeJavaScript('window.received')`);
       console.log('=== PENDING (first hop, manual) ===\n' + pendingText.slice(-400));

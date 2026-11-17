@@ -13,5 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   loadSession: (id) => ipcRenderer.invoke('sessions:load', id),
   saveSession: (o) => ipcRenderer.invoke('sessions:save', o),
-  newWindow: () => ipcRenderer.invoke('window:new')
+  newWindow: () => ipcRenderer.invoke('window:new'),
+  pane: (i, method, args) => ipcRenderer.invoke('pane:call', i, method, args),
+  onPaneEvent: (fn) => ipcRenderer.on('pane:event', (_e, d) => fn(d))
 });

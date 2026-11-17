@@ -285,6 +285,48 @@ function pgPick(kind) {
 }
 
 // ---------- Panes ----------
+// Each pane is a native browser view owned by the main process. This small stand-in
+// gives the rest of the app the same calls it used before.
+function makePaneView(i) {
+  const listeners = {};
+  return {
+    _url: '', _back: false, _fwd: false,
+    getURL() { return this._url; },
+    canGoBack() { return this._back; },
+    canGoForward() { return this._fwd; },
+    goBack() { window.api.pane(i, 'back'); },
+    goForward() { window.api.pane(i, 'forward'); },
+    reload() { window.api.pane(i, 'reload'); },
+    loadURL(u) { this._url = u; return window.api.pane(i, 'load', [u]); },
+    executeJavaScript(code) { return window.api.pane(i, 'exec', [code]); },
+    focus() { window.api.pane(i, 'focus'); },
+    sendInputEvent(ev) { return window.api.pane(i, 'input', [ev]); },
+    insertText(t) { return window.api.pane(i, 'insertText', [t]); },
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    _emit(type, ev) { (listeners[type] || []).forEach((f) => f(ev)); }
+  };
+}
+window.api.onPaneEvent((d) => {
+  const p = panes[d.i];
+  if (!p) return;
+  const wv = p.wv;
+  if (d.type === 'nav') { wv._url = d.url; wv._back = d.canGoBack; wv._fwd = d.canGoForward; wv._emit('did-navigate', d); }
+  else if (d.type === 'dom-ready') wv._emit('dom-ready', {});
+  else if (d.type === 'console') wv._emit('console-message', { message: d.message });
+  else if (d.type === 'fail') wv._emit('did-fail-load', { errorCode: d.code, errorDescription: d.desc, validatedURL: d.url });
+  else if (d.type === 'gone') wv._emit('render-process-gone', {});
+});
+let panesHidden = false;
+function syncPaneBounds() {
+  panes.forEach((p) => {
+    const r = $('.pane-body', p.sec).getBoundingClientRect();
+    window.api.pane(p.i, 'bounds', [{ x: Math.round(r.left), y: Math.round(r.top), width: Math.max(0, Math.round(r.width)), height: Math.max(0, Math.round(r.height)) }]);
+  });
+}
+function setPanesVisible(v) {
+  panesHidden = !v;
+  panes.forEach((p) => window.api.pane(p.i, 'visible', [v]));
+}
 function buildPanes(startUrls) {
   const host = $('#panes');
   [0, 1].forEach((i) => {
@@ -302,23 +344,17 @@ function buildPanes(startUrls) {
         <button class="teach">Teach</button>
         <button class="test">Test</button>
       </div>
-      <div class="pane-body">
-        <div class="banner hidden"><span class="msg"></span><button class="skip mini">Skip</button><button class="cancel mini">Cancel</button></div>
-      </div>`;
+      <div class="banner hidden"><span class="msg"></span><button class="skip mini">Skip</button><button class="cancel mini">Cancel</button></div>
+      <div class="pane-body"></div>`;
     host.appendChild(sec);
-    const wv = document.createElement('webview');
-    wv.setAttribute('partition', 'persist:journey');
-    wv.setAttribute('allowpopups', '');
+    const wv = makePaneView(i);
     const su = startUrls && /^https?:/.test(startUrls[i] || '') ? startUrls[i] : settings.urls[i];
-    wv.setAttribute('src', su || 'https://www.google.com');
-    $('.pane-body', sec).prepend(wv);
     const p = { i, label: label(i), sec, wv, url: $('.url', sec), nameInput: $('.ainame', sec), site: $('.site', sec), banner: $('.banner', sec), pick: null };
     panes.push(p);
     p.nameInput.value = settings.names[i] || '';
     p.nameInput.addEventListener('change', () => { settings.names[i] = p.nameInput.value.trim().toUpperCase(); p.nameInput.value = settings.names[i]; saveSettings(); });
     wv.addEventListener('dom-ready', () => refreshPane(p));
     wv.addEventListener('did-navigate', () => refreshPane(p));
-    wv.addEventListener('did-navigate-in-page', () => refreshPane(p));
     wv.addEventListener('console-message', (e) => onConsole(p, e.message));
     wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) recordError(`${label(i)} failed to load ${e.validatedURL}: ${e.errorDescription}`); });
     wv.addEventListener('render-process-gone', () => recordError(`${label(i)} page crashed`));
@@ -338,6 +374,8 @@ function buildPanes(startUrls) {
     $('.test', sec).onclick = () => testPane(p);
     $('.skip', sec).onclick = () => { if (p.pick) { const pk = p.pick; p.pick = null; run(p, pgPickStop).catch(() => {}); pk.resolve(null); } };
     $('.cancel', sec).onclick = () => { if (p.pick) { const pk = p.pick; p.pick = null; run(p, pgPickStop).catch(() => {}); pk.reject(new Error('cancel')); } else hideBanner(p); };
+    wv.loadURL(su || 'https://www.google.com');
+    new ResizeObserver(syncPaneBounds).observe($('.pane-body', sec));
   });
 }
 function refreshPane(p) {
@@ -354,8 +392,9 @@ function showBanner(p, html, { skip = false, cancel = true } = {}) {
   $('.skip', p.banner).classList.toggle('hidden', !skip);
   $('.cancel', p.banner).classList.toggle('hidden', !cancel);
   p.banner.classList.remove('hidden');
+  syncPaneBounds();
 }
-const hideBanner = (p) => p.banner.classList.add('hidden');
+const hideBanner = (p) => { p.banner.classList.add('hidden'); syncPaneBounds(); };
 
 // ---------- Teach mode ----------
 function onConsole(p, msg) {
@@ -401,10 +440,10 @@ async function testPane(p) {
 }
 
 // ---------- Typing into a site and waiting for its reply ----------
-function pressEnter(wv) {
-  wv.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-  wv.sendInputEvent({ type: 'char', keyCode: '\r' });
-  wv.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+async function pressEnter(wv) {
+  await wv.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+  await wv.sendInputEvent({ type: 'char', keyCode: '\r' });
+  await wv.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
 }
 async function typeAndSend(p, text) {
   const a = adapterFor(p);
@@ -418,11 +457,11 @@ async function typeAndSend(p, text) {
   await sleep(600);
   let clicked = false;
   if (a.send) for (let k = 0; k < 5 && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(400); }
-  if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); pressEnter(p.wv); }
+  if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
   await sleep(1500);
   const left = norm(await run(p, pgInputText, a.input));
   if (window.__dbg) console.log('[dbg] sent to ' + p.label + ' | boxes: ' + JSON.stringify(await Promise.all(panes.map((q) => run(q, pgInputText, '#box')))));
-  if (left && norm(text).startsWith(left.slice(0, 40))) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); pressEnter(p.wv); }
+  if (left && norm(text).startsWith(left.slice(0, 40))) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
 }
 async function waitForReply(p, before, sent, abortable) {
   const a = adapterFor(p);
@@ -954,6 +993,7 @@ function openSettings() {
   $('#sRepo').value = settings.updateRepo || '';
   $('#sToken').value = settings.githubToken || '';
   $('#settingsErr').textContent = '';
+  setPanesVisible(false);
   $('#settings').showModal();
 }
 async function submitSettings(e) {
@@ -1141,6 +1181,9 @@ async function init() {
   $('#maxTurns').onchange = updateControls;
   $('#settingsBtn').onclick = openSettings;
   $('#settingsForm').addEventListener('submit', submitSettings);
+  $('#settings').addEventListener('close', () => setPanesVisible(true));
+  window.addEventListener('resize', syncPaneBounds);
+  setTimeout(syncPaneBounds, 300);
   $('#cancelSettings').onclick = () => $('#settings').close();
   $('#resetFramework').onclick = async () => { const d = await window.api.getDefaults(); $('#sFramework').value = d.framework; };
   $('#copySummary').onclick = async () => { await window.api.clipWrite(summaryText || $('#summary').innerText); $('#sumState').textContent = 'copied'; setTimeout(() => ($('#sumState').textContent = ''), 1500); };

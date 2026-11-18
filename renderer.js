@@ -43,6 +43,7 @@ const R = {
   on: false, busy: false, turn: 0, phase: 'Off',
   task: '', introduced: [false, false], complete: [false, false],
   queued: [[], []], lastFrom: null,
+  sendNote: ['', ''],      // what the last send attempt in each pane did (debug report)
   preapproved: [],         // Justin's standing OKs: [{id, text, to, covers}] used once when an AI waits on him
   waitingOn: null,
   seen: ['', ''],          // last reply already handled in each pane (so old replies aren't re-sent)
@@ -67,7 +68,11 @@ function adapterFor(p) {
   if (!h) return null;
   const t = settings.adapters[h];
   const pr = presetFor(h);
-  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), busy: t.busy || (pr && pr.busy) || '', user: t.user || (pr && pr.user) || '', source: 'taught' };
+  if (t && (!pr || t.override)) {
+    if (!pr) return { ...t, busy: t.busy || '', user: t.user || '', source: 'taught' };
+    // Known site: read and send with the built-in setup first; your taught setup is the backup
+    return { ...t, ai: t.ai || pr.ai, reply: pr.reply, taughtReply: t.reply, send: pr.send, taughtSend: t.send, input: t.input || pr.input, busy: t.busy || pr.busy || '', user: pr.user || t.user || '', source: 'taught' };
+  }
   return pr ? { ...pr, source: 'preset' } : null;
 }
 function defaultAiName(i) {
@@ -242,6 +247,15 @@ function pgAttach(name, content, type) {
   inp.dispatchEvent(new Event('change', { bubbles: true }));
   return { ok: true };
 }
+function pgKeyEnter(sel) {
+  const vis = (e) => e.getClientRects().length > 0;
+  let el; try { el = [...document.querySelectorAll(sel)].filter(vis).pop(); } catch (e) { return false; }
+  if (!el) return false;
+  if (!/^(TEXTAREA|INPUT)$/.test(el.tagName) && !el.isContentEditable) { const inner = el.querySelector('textarea, [contenteditable="true"]'); if (inner) el = inner; }
+  el.focus();
+  for (const type of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+  return true;
+}
 function pgClickSend(sel) {
   if (!sel) return false;
   const vis = (e) => e.getClientRects().length > 0;
@@ -250,7 +264,7 @@ function pgClickSend(sel) {
   const b = els[els.length - 1];
   if (!b) return false;
   b.click();
-  return true;
+  return (b.tagName === 'BUTTON' || b.getAttribute('role') === 'button') ? 'button' : 'other';
 }
 function pgCheck(inSel, repSel) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -534,6 +548,7 @@ async function typeAndSend(p, text, sendTries = 5) {
   if (!f.ok) throw new Error(`${p.label}: ${f.error}`);
   await sleep(150);
   // Literal paste, aimed at this site's own input box
+  const r0 = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
   const r = await run(p, pgPaste, a.input, text);
   if (!r.ok) throw new Error(`${p.label}: couldn't paste into the input box`);
   await sleep(600);
@@ -543,28 +558,45 @@ async function typeAndSend(p, text, sendTries = 5) {
   if (a.send) for (let k = 0; k < sendTries && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(500); }
   if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
   await sleep(1200);
-  const left = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
-  if (left && left.chips) await pushSend(p);
+  await sleep(lagGuard(p));
+  const c1 = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
+  if (clicked === 'other' || (c1 && c1.chips)) await pushSend(p, text, r0 ? r0.userCount : -1); // a real button or Enter: trust it (reconcile checks later)
   if (document.hasFocus() && document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you (only in the window you're using)
   return { clicked };
 }
 // Press send for content that is still sitting in the box: taught button, then Enter, then the site's built-in send button
-async function pushSend(p) {
-  const a = adapterFor(p); const pr = presetFor(hostOf(curUrl(p)));
-  const still = async () => { const c = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', ')); return c && (c.chips || c.text); };
-  if (a.send && await run(p, pgClickSend, a.send)) { await sleep(1200); if (!(await still())) return true; }
-  await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); await sleep(1200);
-  if (!(await still())) return true;
-  const fallback = [pr && pr.send, 'button[data-testid="send-button"], button[aria-label="Send message" i], button[aria-label="Send" i], button[type="submit"]'].filter(Boolean).join(', ');
-  if (await run(p, pgClickSend, fallback)) { await sleep(1200); if (!(await still())) return true; }
-  return false;
+async function pushSend(p, sentText, baseUser = -1) {
+  const a = adapterFor(p);
+  const head = sentText ? norm(sentText).slice(0, 40) : '';
+  const still = async () => {
+    const r = await readPane(p.i);
+    if (r && (r.busy || (baseUser >= 0 && r.userCount > baseUser))) return false; // it went through (AI working / your message appeared)
+    const c = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
+    if (!c) return false;
+    if (c.chips) return true;
+    return !!c.text && (!head || norm(c.text).startsWith(head.slice(0, Math.min(head.length, norm(c.text).length))));
+  };
+  const tries = [
+    ['send button', async () => a.send && run(p, pgClickSend, a.send)],
+    ['taught send button', async () => a.taughtSend && a.taughtSend !== a.send && run(p, pgClickSend, a.taughtSend)],
+    ['Enter in the box', async () => run(p, pgKeyEnter, a.input)],
+    ['Enter key', async () => { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); return true; }],
+    ['any send button', async () => run(p, pgClickSend, 'button[data-testid="send-button"], button[aria-label="Send message" i], button[aria-label="Send" i], button[type="submit"]')]
+  ];
+  const log = [];
+  for (const [name, fn] of tries) {
+    if (!(await still())) { R.sendNote[p.i] = `${new Date().toLocaleTimeString()} sent (${log.length ? log.join(', ') + ' → ' : ''}ok)`; return true; }
+    let did = false; try { did = !!(await fn()); } catch {}
+    log.push(did ? name : name + ' (not found)');
+    if (did) await sleep(1500);
+  }
+  const ok = !(await still());
+  R.sendNote[p.i] = `${new Date().toLocaleTimeString()} ${ok ? 'sent' : 'NOT sent'} after: ${log.join(', ')}`;
+  return ok;
 }
 // Press send again only when the text is still sitting in the box (so it can't be a double submit)
-async function pressSendAgain(p) {
-  const a = adapterFor(p);
-  let clicked = a.send ? await run(p, pgClickSend, a.send) : false;
-  if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
-}
+async function pressSendAgain(p, text, baseUser) { return pushSend(p, text, baseUser); }
+const lagGuard = () => 1500; // give a slow site a moment to clear its box before backups kick in
 async function waitForReply(p, before, sent, abortable) {
   const a = adapterFor(p);
   const stable = (settings.stableSec || 2) * 1000;
@@ -786,9 +818,8 @@ async function readPane(i) {
   if (!a) return null;
   let r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
   // A taught setting that reads blank: fall back to the built-in one for this site
-  if (!r.text && a.source === 'taught') {
-    const pr = presetFor(hostOf(curUrl(p)));
-    if (pr && pr.reply !== a.reply) { const r2 = await run(p, pgRead, pr.reply, a.busy || pr.busy || '', a.user || pr.user || ''); if (r2.text) r = r2; }
+  if (!r.text && a.taughtReply && a.taughtReply !== a.reply) {
+    const r2 = await run(p, pgRead, a.taughtReply, a.busy || '', a.user || ''); if (r2.text) r = r2;
   }
   r.key = msgKey(r.text);
   return r;
@@ -982,7 +1013,7 @@ async function verifySubmitted(e) {
     await sleep(750);
     const c = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
     stuck = !!(c && c.chips);
-    if (stuck) { if (k % 4 === 3) await pushSend(p); continue; } // attachment still in the box: not sent yet
+    if (stuck) { if (k % 4 === 3) await pushSend(p, e.out, e.base.userCount); continue; } // attachment still in the box: not sent yet
     if (k >= 8) break;
     const r = await readPane(e.to);
     if (!r) continue;
@@ -1010,7 +1041,7 @@ async function reconcile(e, r) {
   if (!r) return;
   const comp = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
   if (comp && comp.chips && !r.busy) {
-    await pushSend(p);
+    await pushSend(p, e.out, e.base.userCount);
     if ((await verifySubmitted(e)) === 'yes') { await markSubmitted(e); return; }
     block(`${label(e.from)} RESPONSE ${e.num || '?'} is still sitting in ${label(e.to)}'s input box as an attachment and wasn't sent. Press send in ${label(e.to)}, then tell the moderator "it arrived". Or remove it and say "resend".`);
     return;
@@ -1027,7 +1058,7 @@ async function reconcile(e, r) {
   // Not there. If the text is still sitting in the box, it was never submitted: press send.
   const left = norm(await run(p, pgInputText, a.input));
   if (left && e.out && norm(e.out).startsWith(left.slice(0, 40))) {
-    await pressSendAgain(p);
+    await pressSendAgain(p, e.out, e.base.userCount);
     if ((await verifySubmitted(e)) === 'yes') { await markSubmitted(e); return; }
   }
   if (r.userCount < 0) { block(`delivery to ${label(e.to)} is uncertain and this site doesn't let me confirm it. Look at ${label(e.to)}: if ${label(e.from)} RESPONSE ${e.num || '?'} is there, tell the moderator "it arrived"; if not, "resend".`); return; }
@@ -1646,6 +1677,10 @@ async function submitSettings(e) {
   let adapters;
   try { adapters = JSON.parse($('#sAdapters').value || '{}'); } catch { $('#settingsErr').textContent = 'Taught sites is not valid JSON.'; return; }
   const newDrive = $('#sDrive').value, oldDrive = $('#sDrive').dataset.was || '';
+  if (newDrive && (newDrive !== oldDrive || newDrive !== settings.driveFolder)) {
+    const ds = await window.api.driveSet(newDrive);
+    if (ds.notes && ds.notes.length) recordError('Drive choice: ' + ds.notes.join('; '));
+  }
   if (newDrive && newDrive !== oldDrive) {
     const mv = await window.api.driveMove({ from: oldDrive, to: newDrive });
     note(mv.copied ? `Switched Google Drive to ${newDrive}. Your relay sessions and files were copied over.` : mv.error ? `Switched Google Drive to ${newDrive}, but copying old files failed: ${mv.error}` : `Switched Google Drive to ${newDrive}.`, !!mv.error);
@@ -1722,6 +1757,7 @@ async function debugReport() {
   const drv = await window.api.driveInfo();
   lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'} · sessions saved ${drv.found ? 'in Drive (Journey Relay/_sessions)' : 'on this computer only'} · computer: ${myHost}`);
   lines.push(`Delivery: ${deliveryText().text}`);
+  lines.push(`Last send attempt: AI 1 ${R.sendNote[0] || '-'} · AI 2 ${R.sendNote[1] || '-'}`);
   lines.push('Recent deliveries: ' + (R.ledger.slice(-6).map((y) => `${label(y.from)} R${y.num || '?'}→${label(y.to)} ${y.state}${y.attempts > 1 ? ` (${y.attempts} tries)` : ''}`).join(' | ') || 'none'));
   lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);
   lines.push(`Relay: ${relayStatus()}

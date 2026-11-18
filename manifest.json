@@ -1,6 +1,6 @@
 {
-  "version": "1.11.2",
-  "notes": "When a long message is stuck as an attachment, the relay now presses send again (Enter, then the site's own send button) before asking you. Stuck check ignores attachments in older messages.",
+  "version": "1.11.3",
+  "notes": "Messages get sent even when a taught send button does nothing. Built-in ChatGPT/Claude readers come first. Your Google Drive choice sticks (another relay window could undo it before), and the old drive is marked so no computer goes back to it.",
   "files": [
     "main.js",
     "preload.js",

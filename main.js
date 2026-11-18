@@ -148,15 +148,23 @@ function loadSettings() {
     if (OLD_FRAMEWORKS.includes(s.framework)) s.framework = FRAMEWORK; // untouched old rules -> new default
     for (const k of Object.keys(s.adapters || {})) { const ad = s.adapters[k]; if (ad && /^#(_?r_|:r|radix-|headlessui-)/i.test(ad.send || '')) ad.send = ''; } // auto-generated ids change every page load
     if (!s.opusMigrated) { s.modModel = 'claude-opus-5-5'; s.opusMigrated = true; } // moderator moved to Opus 5.5
+    const dc = loadDriveChoice();
+    if (dc === null && s.driveFolder) { try { saveDriveChoice(s.driveFolder); } catch {} } // one-time move from settings.json
+    else s.driveFolder = dc || '';
     return s;
   } catch {
     return { ...DEFAULTS };
   }
 }
 
+// The Drive choice lives in its own file, so a window holding an old copy of settings can't undo it
+const driveFile = () => path.join(app.getPath('userData'), 'drive.json');
+function loadDriveChoice() { try { return JSON.parse(fs.readFileSync(driveFile(), 'utf8')).folder || ''; } catch { return null; } }
+function saveDriveChoice(folder) { fs.mkdirSync(path.dirname(driveFile()), { recursive: true }); fs.writeFileSync(driveFile(), JSON.stringify({ folder, at: new Date().toISOString() }, null, 2)); }
 function saveSettings(s) {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2));
+  const { driveFolder, ...rest } = s; // never saved here; see drive:set
+  fs.writeFileSync(settingsFile(), JSON.stringify(rest, null, 2));
 }
 
 let firstWindow = true;
@@ -252,6 +260,21 @@ app.on('web-contents-created', (_e, contents) => {
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:defaults', () => ({ ...DEFAULTS }));
 ipcMain.handle('settings:save', (_e, s) => { saveSettings(s); return true; });
+// Pick the Google Drive the relay saves to. Marks it as home, and marks the others as moved away, so other computers pick the same account.
+ipcMain.handle('drive:set', (_e, folder) => {
+  saveDriveChoice(folder || '');
+  const notes = [];
+  if (folder) {
+    try { fs.mkdirSync(path.join(folder, 'Journey Relay'), { recursive: true }); fs.writeFileSync(path.join(folder, 'Journey Relay', '_home.json'), JSON.stringify({ home: true, at: new Date().toISOString(), computer: os.hostname() }, null, 2)); } catch (e) { notes.push('could not mark ' + folder + ': ' + e.message); }
+    try { fs.rmSync(path.join(folder, 'Journey Relay', '_moved.json'), { force: true }); } catch {}
+    for (const L of (process.platform === 'win32' ? 'DEFGHIJKLMNOPQRSTUVWXYZ' : '')) {
+      const other = `${L}:\\My Drive`;
+      if (other.toLowerCase() === folder.toLowerCase() || !fs.existsSync(path.join(other, 'Journey Relay'))) continue;
+      try { fs.writeFileSync(path.join(other, 'Journey Relay', '_moved.json'), JSON.stringify({ movedTo: folder, at: new Date().toISOString() }, null, 2)); fs.rmSync(path.join(other, 'Journey Relay', '_home.json'), { force: true }); } catch (e) { notes.push('could not mark ' + other + ' as old: ' + e.message); }
+    }
+  }
+  return { ok: true, notes };
+});
 ipcMain.handle('clip:read', () => clipboard.readText());
 ipcMain.handle('clip:write', (_e, t) => { clipboard.writeText(String(t ?? '')); return true; });
 
@@ -325,7 +348,10 @@ function findDriveRoot() {
   cands.push(path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'My Drive'), path.join(home, 'Google Drive'));
   const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
   if (s.driveFolder && isDir(s.driveFolder)) return s.driveFolder;
-  const found = cands.filter(isDir);
+  const rel = (p, f) => fs.existsSync(path.join(p, 'Journey Relay', f));
+  const found = cands.filter(isDir).filter((p) => !rel(p, '_moved.json'));
+  const marked = found.find((p) => rel(p, '_home.json'));
+  if (marked) return marked;
   // A new computer: pick the drive that already has your synced relay settings, then any with relay sessions
   return found.find((p) => fs.existsSync(path.join(p, 'Journey Relay', '_settings.json')))
     || found.find((p) => fs.existsSync(path.join(p, 'Journey Relay', '_sessions')))

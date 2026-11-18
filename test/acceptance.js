@@ -186,6 +186,14 @@ module.exports = (win, app) => {
       const c16 = await js(`run(panes[0], pgComposer, '#box', '.bot, .user')`);
       check('16. Old attachment in the chat is not counted as stuck in the input box', c16.chips === 0, JSON.stringify(c16));
 
+      // ---- 17. Drive choice sticks even when another window saves old settings ----
+      const d0 = await js('window.api.driveInfo().then(r => r.root)');
+      await js(`window.api.driveSet('/tmp/fakedrive2/My Drive')`);
+      await js(`window.api.saveSettings({ ...settings, driveFolder: '' })`); // a stale window saving
+      const d17 = await js('window.api.driveInfo().then(r => r.root)');
+      await js(`window.api.driveSet(${JSON.stringify('')})`);
+      check('17. Drive choice survives a stale window saving settings', d17 === '/tmp/fakedrive2/My Drive', `before ${d0}; after stale save ${d17}`);
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   saveSession: (o) => ipcRenderer.invoke('sessions:save', o),
   newWindow: () => ipcRenderer.invoke('window:new'),
   hostFocus: () => ipcRenderer.invoke('host:focus'),
+  driveSet: (folder) => ipcRenderer.invoke('drive:set', folder),
   driveInfo: () => ipcRenderer.invoke('drive:info'),
   driveList: () => ipcRenderer.invoke('drive:list'),
   driveMove: (o) => ipcRenderer.invoke('drive:move', o),

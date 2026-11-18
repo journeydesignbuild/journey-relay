@@ -140,3 +140,20 @@ dialog h3 { margin: 0; }
 .m.approve details summary::before { content: '▸ '; }
 .m.approve details[open] summary::before { content: '▾ '; }
 .m.approve .ap-body { white-space: pre-wrap; margin-top: 6px; max-height: 260px; overflow-y: auto; color: #C9CED6; }
+
+.relay-toggle { height: 28px; padding: 0 14px; font-weight: 700; margin-right: 6px; }
+.relay-toggle.on { background: #F08A3C; border-color: #F08A3C; color: #1A1205; }
+
+.relaycard { flex-direction: row; align-items: center; gap: 12px; padding: 14px; }
+.relaycard.on { border-color: #F08A3C; background: #1E1813; }
+.relay-status { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.relay-text { min-width: 0; }
+.relay-text .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-big { font-size: 22px; font-weight: 800; letter-spacing: .3px; }
+.relaycard.on .relay-big { color: #F2A766; }
+.dot { width: 14px; height: 14px; border-radius: 50%; background: #4A5059; flex-shrink: 0; }
+.dot.on { background: #F08A3C; box-shadow: 0 0 0 4px rgba(240,138,60,.2); }
+.relay-go { height: 52px; min-width: 110px; font-size: 18px; font-weight: 800; background: #F08A3C; border-color: #F08A3C; color: #1A1205; border-radius: 10px; }
+.relay-go:hover { background: #F49A55; }
+.relay-go.stop { background: #2A1717; border-color: #7A3434; color: #F2A0A0; }
+.relay-go.stop:hover { background: #3A1E1E; }

@@ -1,6 +1,6 @@
 {
-  "version": "1.5.4",
-  "notes": "Approval cards shrink to one line after you decide.",
+  "version": "1.6.0",
+  "notes": "Simpler relay: one Start/Stop switch. While on, every finished reply from either AI is copied to the other. Stricter \"is it really done?\" check before sending.",
   "files": [
     "main.js",
     "preload.js",

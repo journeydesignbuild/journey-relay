@@ -11,11 +11,6 @@
     <span id="phase" class="phase idle">Idle</span>
     <span id="turnInfo" class="muted"></span>
     <span class="spacer"></span>
-    <span class="row tight runbar">
-      <button id="autoBtn" class="mini">Automate</button>
-      <button id="pauseBtn" class="mini">Pause</button>
-      <button id="stopBtn" class="mini danger">Stop</button>
-    </span>
     <button id="newWinBtn" class="mini" title="Open another relay window (Ctrl+N)">+ New window</button>
     <span id="version" class="muted small"></span>
     <button id="updateBtn" class="mini hidden">Update available</button>
@@ -27,18 +22,15 @@
     <div id="panes"></div>
 
     <aside id="side">
-      <section id="pending" class="card pending hidden">
-        <div class="row head">
-          <strong id="pendingLabel">AI 1 → AI 2</strong>
-          <span class="muted small">Exact copy · nothing added</span>
+      <section class="card relaycard">
+        <div class="relay-status">
+          <span id="relayDot" class="dot"></span>
+          <div class="relay-text">
+            <div id="relayState" class="relay-big">Relay OFF</div>
+            <div id="relayPhase" class="muted small">Replies aren't being copied.</div>
+          </div>
         </div>
-        <textarea id="pendingText" rows="7" readonly></textarea>
-        <div id="pendingNote" class="small accent hidden"></div>
-        <div class="row btns">
-          <button id="passBtn" class="primary">Pass</button>
-          <button id="editBtn">Edit</button>
-          <button id="pendingAutoBtn">Automate</button>
-        </div>
+        <button id="relayBtn" class="relay-go">Start</button>
       </section>
 
       <section class="card sumcard">
@@ -87,22 +79,14 @@
           <button id="renameCancel" class="mini">Cancel</button>
         </div>
       </div>
-      <label class="field task-field">Task
-        <textarea id="task" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
+      <label class="field task-field">Goal (optional)
+        <textarea id="task" placeholder="Optional. What the two AIs are working toward. It's added to the relay rules each AI gets, and the summary uses it."></textarea>
       </label>
-      <div class="grid2">
-        <label class="field">Start with
-          <select id="startFrom"><option value="0">AI 1</option><option value="1">AI 2</option></select>
-        </label>
-        <label class="field">Max turns
-          <input id="maxTurns" type="number" min="1" max="100" value="20" />
-        </label>
-      </div>
-      <label class="check"><input type="checkbox" id="pauseOnQ" /> Pause when an AI asks me a question</label>
-      <div class="row btns">
-        <button id="startBtn" class="primary">Start</button>
-        <button id="contBtn">Continue</button>
-      </div>
+      <label class="field">Max turns each time the relay is switched on
+        <input id="maxTurns" type="number" min="1" max="200" value="20" />
+      </label>
+      <label class="check"><input type="checkbox" id="pauseOnQ" /> Turn the relay off when an AI asks me a question</label>
+      <p class="muted small" style="margin:0">With the relay ON, every finished reply from either AI is copied to the other. To start, type into either chat. To pick up an old conversation, open both chats and switch it on, or ask the moderator to send one side's last reply across.</p>
     </section>
   </div>
 

@@ -38,11 +38,17 @@ const panes = [];
 const logEntries = [];
 const questions = [];
 let summaryText = '';
+// The relay is one switch. ON: whenever either AI finishes a reply, it's copied to the other.
 const R = {
-  running: false, paused: false, stopReq: false, auto: false, turn: 0, phase: 'Idle',
-  pending: null, task: '', introduced: [false, false], complete: [false, false],
-  queued: [[], []], resumeFrom: null, lastFrom: null
+  on: false, busy: false, turn: 0, phase: 'Off',
+  task: '', introduced: [false, false], complete: [false, false],
+  queued: [[], []], lastFrom: null,
+  seen: ['', ''],          // last reply already handled in each pane (so old replies aren't re-sent)
+  rebase: [false, false],  // pane switched to a different chat: re-read its starting point
+  lastSent: ['', ''],      // start of what we last pasted into each pane (ignore it if it shows up as a "reply")
+  pending: null            // legacy (manual Pass mode removed)
 };
+const stab = [null, null];
 
 // ---------- Helpers ----------
 const hostOf = (url) => { try { return new URL(url).host.replace(/^www\./, ''); } catch { return ''; } };
@@ -53,7 +59,7 @@ function adapterFor(p) {
   if (!h) return null;
   const t = settings.adapters[h];
   const pr = presetFor(h);
-  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), source: 'taught' };
+  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), busy: t.busy || (pr && pr.busy) || '', source: 'taught' };
   return pr ? { ...pr, source: 'preset' } : null;
 }
 function defaultAiName(i) {
@@ -83,6 +89,12 @@ function pgRead(sel, busySel) {
   const last = els[els.length - 1];
   let busy = false;
   if (busySel) { try { busy = [...document.querySelectorAll(busySel)].some(vis); } catch (e) {} }
+  // generic signs that the AI is still working (stop buttons, streaming flags)
+  if (!busy) {
+    try {
+      busy = [...document.querySelectorAll('[data-testid="stop-button"], [data-is-streaming="true"], button[aria-label*="Stop" i], button[aria-label*="Cancel response" i]')].some(vis);
+    } catch (e) {}
+  }
   return { count: els.length, text: last ? (last.innerText || '').trim() : '', busy };
 }
 function pgFocusInput(sel, clear) {
@@ -397,8 +409,13 @@ function buildPanes(startUrls) {
     new ResizeObserver(syncPaneBounds).observe($('.pane-body', sec));
   });
 }
+const chatPath = (u) => { try { const x = new URL(u); return x.host + x.pathname; } catch { return ''; } };
 function refreshPane(p) {
   const u = curUrl(p);
+  const path = chatPath(u);
+  // moved from one chat to a different one (not a brand-new chat getting its first URL)
+  if (p.lastPath && path && path !== p.lastPath && /\/(c|chat|app)\/[\w-]{8,}/.test(p.lastPath)) paneChatChanged(p.i);
+  if (path) p.lastPath = path;
   if (R.task) autosave();
   if (document.activeElement !== p.url) p.url.value = u;
   const a = adapterFor(p);
@@ -430,7 +447,7 @@ function pick(p, kind, html, allowSkip) {
   });
 }
 async function teach(p) {
-  if (R.running && !R.paused) { note('Pause the relay before teaching a site.', true); return; }
+  if (R.on) { note('Turn the relay off before teaching a site.', true); return; }
   const h = hostOf(curUrl(p));
   if (!h) return;
   if (presetFor(h) && !confirm(`${presetFor(h).name} already has a built-in setup. Only teach it if Test fails. Teach anyway?`)) return;
@@ -524,7 +541,7 @@ async function sendAndWait(i, text, abortable = true, files = []) {
   await typeAndSend(p, text, files.length ? 40 : 5);
   setPhase(`Waiting for ${p.label}`);
   const out = await waitForReply(p, before, text, abortable);
-  setPhase(R.running ? 'Running' : 'Idle');
+  setPhase(R.on ? R.phase : 'Off');
   return out;
 }
 
@@ -625,148 +642,131 @@ function intro(i) {
 }
 
 // ---------- Relay engine ----------
-async function gate() {
-  while (R.paused && !R.stopReq) await sleep(250);
-  if (R.stopReq) throw new Stop();
-}
-function approve(from, to, text) {
-  return new Promise((resolve, reject) => {
-    R.pending = { from, to, resolve, reject };
-    $('#pendingLabel').textContent = `${label(from)} → ${label(to)}`;
-    const ta = $('#pendingText');
-    ta.value = text; ta.readOnly = true;
-    $('#editBtn').textContent = 'Edit';
-    $('#pending').classList.remove('hidden');
-    refreshPendingNote();
-    setPhase('Your move: Pass or Automate');
-    updateControls();
-  });
-}
-function passPending() {
-  const pd = R.pending;
-  if (!pd) return;
-  R.pending = null;
-  hidePending();
-  pd.resolve($('#pendingText').value);
+function refreshPendingNote() {}
+function hidePending() {}
+
+function setRelay(on, why) {
+  if (on === R.on) { updateControls(); return; }
+  R.on = on;
+  if (on) {
+    R.turn = 0; R.complete = [false, false]; stab[0] = stab[1] = null;
+    for (const i of [0, 1]) if (!R.seen[i]) R.rebase[i] = true; // fresh: start from whatever is on screen now
+    note(why || 'Relay on. Replies from either AI are copied to the other.');
+  } else note(why || 'Relay off.');
+  if (settings.auto !== on && !why) { settings.auto = on; saveSettings(); } // remember your choice (not auto-stops)
   updateControls();
-}
-function hidePending() { $('#pending').classList.add('hidden'); }
-function refreshPendingNote() {
-  const el = $('#pendingNote');
-  if (!R.pending || !R.queued[R.pending.to].length) { el.classList.add('hidden'); return; }
-  el.textContent = `+ Your answer will be attached as USER RESPONSE (${R.queued[R.pending.to].length}).`;
-  el.classList.remove('hidden');
-}
-function setAuto(v) {
-  R.auto = v;
-  if (settings.auto !== v) { settings.auto = v; saveSettings(); } // remembered across runs and restarts
-  if (v && R.pending) passPending();
-  updateControls();
-}
-function setPaused(v) { if (!R.running) return; R.paused = v; updateControls(); }
-function stopRelay() {
-  if (!R.running) return;
-  R.stopReq = true; R.paused = false;
-  if (R.pending) { const pd = R.pending; R.pending = null; hidePending(); pd.reject(new Stop()); }
-  updateControls();
+  autosave();
 }
 
-async function handleReply(i, text) {
-  let p = parseTurn(text);
-  if (!p) {
-    addLog({ who: label(i), text, kind: 'reply', turn: R.turn });
-    note(`${label(i)} didn't use the relay format. Asking it to resend.`, true);
-    const fix = `Your last reply did not follow the RELAY RULES. Resend the same content in the required format: start with "${aiName(i)} RESPONSE <number> START" and finish with "END OF TURN".`;
-    addLog({ who: 'App', to: label(i), text: fix, kind: 'fix' });
-    text = await sendAndWait(i, fix);
-    p = parseTurn(text);
-    if (!p) {
-      addLog({ who: label(i), text, kind: 'reply', turn: R.turn });
-      R.paused = true; updateControls();
-      note(`${label(i)} still isn't following the format. Paused. Fix it in that site, then Resume.`, true);
-      await gate();
-      text = await readLatest(i);
-      p = parseTurn(text) || { name: aiName(i), num: '?', payload: text, response: text, requests: '', userRequest: '', complete: false, hasEnd: false };
-    }
+// A reply counts as finished only if END OF TURN is the last thing in it (allowing a few chars of site UI)
+const endsWithEot = (t) => { const k = t.lastIndexOf('END OF TURN'); return k >= 0 && t.slice(k + 11).trim().length <= 40; };
+
+// Watch both panes; relay any reply that's finished and new
+let ticking = false; // one check at a time, so a reply can never be sent twice
+async function tick() {
+  if (!R.on || R.busy || ticking) return;
+  ticking = true;
+  try { await tickOnce(); } finally { ticking = false; }
+}
+async function tickOnce() {
+  const stableMs = Math.max(3, settings.stableSec || 2) * 1000;
+  const fallbackMs = (settings.fallbackSec || 90) * 1000;
+  for (const i of [0, 1]) {
+    const p = panes[i]; const a = adapterFor(p);
+    if (!a) continue;
+    let r;
+    try { r = await run(p, pgRead, a.reply, a.busy || ''); } catch { continue; }
+    const t = r.text || '';
+    if (R.rebase[i]) { R.seen[i] = norm(t); R.rebase[i] = false; stab[i] = null; continue; }
+    if (!t || r.busy) { if (r.busy && t && norm(t) !== R.seen[i]) setPhase(`${label(i)} is working…`); stab[i] = null; continue; }
+    const n = norm(t);
+    if (n === R.seen[i]) continue;
+    if (R.lastSent[i] && n.startsWith(R.lastSent[i])) { R.seen[i] = n; continue; } // our own paste echoed back
+    if (!stab[i] || stab[i].t !== t) { stab[i] = { t, since: Date.now() }; setPhase(`${label(i)} is replying…`); continue; }
+    const waitMs = endsWithEot(t) ? stableMs : fallbackMs;
+    if (Date.now() - stab[i].since < waitMs) continue;
+    // Final check: make sure the AI really is done (no new text, nothing running) before relaying
+    setPhase(`Checking ${label(i)} is done…`);
+    await sleep(3000);
+    let r2;
+    try { r2 = await run(p, pgRead, a.reply, a.busy || ''); } catch { continue; }
+    if (r2.busy || r2.text !== t || r2.count !== r.count) { stab[i] = null; continue; }
+    R.seen[i] = n; stab[i] = null;
+    await relayFrom(i, t);
+    return;
   }
-  addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: p.num });
-  if (p.files && p.files.length) await saveReplyFiles(i, p);
-  R.lastFrom = i;
-  R.complete[i] = !!p.complete;
-  if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
-  if (R.turn > 0 && R.turn % 2 === 0) summarizeSoon();
-  return p;
+  if (R.on && !R.busy) setPhase('On · waiting for a reply');
 }
 
-async function runRelay(task, startIdx, resume = false) {
-  if (R.running) return 'Relay is already running.';
-  if (resume) {
-    // Works without a task too: if we don't know who spoke last, use the "Start with" pane's latest reply
-    if (R.lastFrom === null) { R.lastFrom = +$('#startFrom').value; R.introduced = [true, true]; }
-  } else {
-    task = String(task || '').trim();
-    if (!task) { note('Type a task first.', true); return 'No task given.'; }
-  }
-  for (const i of [0, 1]) if (!adapterFor(panes[i])) { note(`${label(i)} isn't set up for this site. Click Teach.`, true); return `${label(i)} not set up.`; }
-  if (resume) Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, complete: [false, false], resumeFrom: null });
-  else {
-    const reuse = session && !R.task && !logEntries.length; // untitled session with only moderator chat
-    Object.assign(R, { running: true, paused: false, stopReq: false, turn: 0, pending: null, task, introduced: [false, false], complete: [false, false], queued: reuse ? R.queued : [[], []], resumeFrom: null, lastFrom: null });
-    if (!reuse) { logEntries.length = 0; questions.length = 0; summaryText = ''; renderSummary(); chatLog.length = 0; startNewSession(); }
-  }
-  if (!resume) $('#task').value = task;
+// Copy one finished reply from pane i to the other pane
+async function relayFrom(i, text, opts = {}) {
+  R.busy = true;
   updateControls();
   try {
-    let from, parsed, reply;
-    if (resume) {
-      from = R.lastFrom;
-      parsed = parseTurn(await readLatest(from));
-      if (!parsed) throw new Error(`${label(from)}'s latest reply isn't in the relay format, so there's nothing to pass on.`);
-      note(`Continuing from ${label(from)}${R.queued[1 - from].length ? ' with your answer' : ''}.`);
-    } else {
-      from = startIdx;
-      const first = intro(from);
-      R.introduced[from] = true;
-      addLog({ who: 'You', to: label(from), text: first, kind: 'setup' });
-      reply = await sendAndWait(from, first);
-      parsed = await handleReply(from, reply);
+    const parsed = parseTurn(text);
+    // Replies without the markers are passed through as they are
+    const p = parsed || { name: aiName(i), num: '', payload: text.trim(), files: [], response: text, requests: '', userRequest: '', complete: false, hasEnd: false };
+    addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: p.num });
+    if (p.files && p.files.length) await saveReplyFiles(i, p);
+    R.lastFrom = i;
+    R.complete[i] = !!p.complete;
+    const qBefore = questions.length;
+    if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
+    if (R.turn > 0 && R.turn % 2 === 0) summarizeSoon();
+    if (!opts.force) {
+      if (R.complete[0] && R.complete[1]) { setRelay(false, 'Both AIs wrote SESSION COMPLETE. Relay off.'); summarizeSoon(); return; }
+      if (R.turn >= maxTurns()) { setRelay(false, `Reached ${maxTurns()} turns. Relay off. Turn it on to keep going.`); summarizeSoon(); return; }
+      if ($('#pauseOnQ').checked && questions.length > qBefore) { setRelay(false, 'Relay off so you can answer the question. Turn it on when ready.'); return; }
     }
-    while (R.turn < maxTurns()) {
-      await gate();
-      if (R.resumeFrom !== null) {
-        from = R.resumeFrom; R.resumeFrom = null;
-        parsed = parseTurn(await readLatest(from)) || parsed;
-      }
-      if (R.complete[0] && R.complete[1]) { note('Both sides wrote SESSION COMPLETE. Done.'); break; }
-      const to = 1 - from;
-      const hop = hopContent(parsed);
-      let out = hop.text;
-      if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(from)}'s first reply.\n\n` + out;
-      if (!R.auto) { out = await approve(from, to, out); await gate(); }
-      R.introduced[to] = true;
-      const answers = R.queued[to].splice(0);
-      if (answers.length) out += '\n\nUSER RESPONSE\n' + answers.join('\n\n');
-      note(`Passed ${label(from)} → ${label(to)}${answers.length ? ' + your answer' : ''}${hop.files.length ? ` + ${hop.files.length} file${hop.files.length > 1 ? 's' : ''}` : ''}.`);
-      reply = await sendAndWait(to, out, true, hop.files);
-      R.turn++;
-      updateControls();
-      parsed = await handleReply(to, reply);
-      from = to;
-      if (R.auto) await sleep(800);
-    }
-    if (R.turn >= maxTurns()) note(`Hit max turns (${maxTurns()}). Stopped.`);
+    const to = 1 - i;
+    const hop = hopContent(p);
+    let out = hop.text;
+    if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(i)}'s latest reply.\n\n` + out;
+    const answers = R.queued[to].splice(0);
+    if (answers.length) out += '\n\nUSER RESPONSE\n' + answers.join('\n\n');
+    await sendOnly(to, out, hop.files);
+    R.introduced[to] = true;
+    R.turn++;
+    note(`Passed ${label(i)} → ${label(to)}${answers.length ? ' + your answer' : ''}${hop.files.length ? ` + ${hop.files.length} file${hop.files.length > 1 ? 's' : ''}` : ''}.`);
   } catch (e) {
-    if (e instanceof Stop) note('Stopped.');
-    else note('Error: ' + e.message, true);
+    note('Error: ' + e.message, true);
+    if (R.on) setRelay(false, 'Relay off because of the error above. Fix it and turn the relay back on.');
   } finally {
-    R.running = false; R.paused = false; R.stopReq = false; R.pending = null;
-    hidePending();
-    autosave();
-    setPhase('Idle');
+    R.busy = false;
     updateControls();
-    summarizeSoon();
+    autosave();
   }
-  return 'Relay ended.';
+}
+
+// Paste text (and attach files) into pane i and send it. Doesn't wait for the reply: the watcher catches it.
+async function sendOnly(i, text, files = []) {
+  const p = panes[i]; const a = adapterFor(p);
+  if (!a) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
+  // don't interrupt an AI that's still working
+  const limit = Date.now() + (settings.timeoutMin || 60) * 60000;
+  for (;;) {
+    const r = await run(p, pgRead, a.reply, a.busy || '');
+    if (!r.busy) break;
+    if (Date.now() > limit) throw new Error(`${p.label} was still busy, so nothing was sent.`);
+    setPhase(`Waiting for ${p.label} to finish before sending`);
+    await sleep(1500);
+  }
+  setPhase(`Sending to ${p.label}`);
+  for (const f of files) {
+    const r = await run(p, pgAttach, f.name, f.content, mimeFor(f.name));
+    if (!r.ok) throw new Error(`${p.label}: couldn't attach ${f.name} (${r.error})`);
+    await sleep(2500);
+  }
+  R.lastSent[i] = norm(text).slice(0, 60);
+  await typeAndSend(p, text, files.length ? 40 : 5);
+}
+
+// Called when a pane moves to a different chat: start fresh there
+function paneChatChanged(i) {
+  R.rebase[i] = true;
+  R.introduced[i] = false;
+  stab[i] = null;
+  autosave();
 }
 
 // ---------- Questions ----------
@@ -783,7 +783,7 @@ function addQuestion(i, num, text) {
   const q = { id: questions.length + 1, from: i, ai: aiName(i), num, text, answered: false };
   questions.push(q);
   modMsg('q', `Q${q.id} · ${q.ai} asks:\n${text}`);
-  if ($('#pauseOnQ').checked && R.running) { R.paused = true; updateControls(); note(`Paused for ${q.ai}'s question.`); }
+
 }
 function renderQuestions() {}
 
@@ -815,19 +815,20 @@ function transcript(maxChars = 40000, per = 4000) {
 function setPhase(t) {
   R.phase = t;
   const el = $('#phase');
-  el.textContent = R.paused ? 'Paused' : t;
-  el.className = 'phase ' + (R.running ? 'live' : 'idle');
+  el.textContent = R.on ? t : 'Off';
+  el.className = 'phase ' + (R.on ? 'live' : 'idle');
+  const rp = $('#relayPhase');
+  if (rp) rp.textContent = R.on ? `${t} · turn ${R.turn} of ${maxTurns()}` : "Replies aren't being copied.";
 }
 function updateControls() {
-  $('#startBtn').disabled = R.running;
-  $('#contBtn').disabled = R.running;
-  $('#startBtn').textContent = R.task && !R.running ? 'New run' : 'Start';
-  $('#pauseBtn').disabled = !R.running;
-  $('#stopBtn').disabled = !R.running;
-  $('#pauseBtn').textContent = R.paused ? 'Resume' : 'Pause';
-  for (const b of [$('#autoBtn'), $('#pendingAutoBtn')]) { b.textContent = R.auto ? 'Auto: ON' : 'Automate'; b.classList.toggle('on', R.auto); }
-  $('#turnInfo').textContent = R.running ? `Turn ${R.turn} of ${maxTurns()} · ${R.auto ? 'automatic' : 'manual'}` : '';
-  setPhase(R.running ? (R.pending ? 'Your move: Pass or Automate' : R.phase) : 'Idle');
+  const b = $('#relayBtn');
+  b.textContent = R.on ? 'Stop' : 'Start';
+  b.classList.toggle('stop', R.on);
+  $('#relayState').textContent = R.on ? 'Relay ON' : 'Relay OFF';
+  $('#relayDot').classList.toggle('on', R.on);
+  $('.relaycard').classList.toggle('on', R.on);
+  $('#turnInfo').textContent = R.on ? `Turn ${R.turn} of ${maxTurns()}` : '';
+  setPhase(R.on ? (R.busy ? R.phase : 'On · waiting for a reply') : 'Off');
 }
 
 // ---------- Summary ----------
@@ -874,25 +875,33 @@ const MOD_TOOLS = [
       deliver_now: { type: 'boolean', description: 'Type it into the site(s) right away. Only works when the relay is not running.' }
     }, required: ['answer'] } },
   { name: 'relay_control',
-    description: 'Control the relay. start (new run with a task), continue (pick up the finished/stopped session where it left off, carrying queued answers), pause, resume, stop, automate (auto-pass every hop), manual (approve each hop), pass (send the hop waiting for approval).',
-    input_schema: { type: 'object', properties: {
-      action: { type: 'string', enum: ['start', 'continue', 'pause', 'resume', 'stop', 'automate', 'manual', 'pass'] },
-      task: { type: 'string' }, start_pane: { type: 'integer', enum: [1, 2] }
-    }, required: ['action'] } },
+    description: 'Turn the relay on (replies from either AI get copied to the other) or off.',
+    input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['on', 'off'] } }, required: ['action'] } },
+  { name: 'relay_latest',
+    description: "Pick up a conversation: copy the latest reply currently in one pane over to the other AI right now (with the relay rules if that AI hasn't had them). Use when Justin wants to restart or nudge things, e.g. 'send Claude's last reply to ChatGPT'. Checks first that the source AI has finished working.",
+    input_schema: { type: 'object', properties: { from_pane: { type: 'integer', enum: [1, 2] } }, required: ['from_pane'] } },
+  { name: 'check_panes', description: "Check whether each AI is idle or still working (stop button, streaming, text still changing), and whether its latest reply ends with END OF TURN. Use before acting, and when Justin asks if something is stuck.",
+    input_schema: { type: 'object', properties: {} } },
   { name: 'read_pane', description: 'Read the latest reply currently shown in a pane.',
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] } }, required: ['pane'] } },
   { name: 'send_to_pane',
-    description: 'Type your own separate message into a pane and send it (not part of the word-for-word relay). Only when the relay is stopped or paused. Waits for the reply.',
+    description: "Type your own separate message into a pane and send it (not part of the word-for-word relay). Waits until that AI is idle. Its reply is then handled like any other reply.",
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] }, text: { type: 'string' } }, required: ['pane', 'text'] } },
-  { name: 'edit_pending', description: 'Replace the text of the hop waiting for approval. Only when Justin asks you to change it.',
-    input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
   { name: 'set_options', description: 'Change relay options.',
     input_schema: { type: 'object', properties: { max_turns: { type: 'integer' }, pause_on_question: { type: 'boolean' } } } }
 ];
 
 function relayStatus() {
-  if (!R.running) return `idle (last session: ${R.turn} turns)`;
-  return `${R.paused ? 'paused' : R.pending ? 'waiting for Justin to pass the next hop' : R.phase}, turn ${R.turn} of ${maxTurns()}, ${R.auto ? 'automatic' : 'manual'} mode`;
+  return R.on ? `ON (${R.phase}), turn ${R.turn} of ${maxTurns()}` : 'OFF';
+}
+async function paneState(i) {
+  const p = panes[i]; const a = adapterFor(p);
+  if (!a) return { pane: label(i), ai: aiName(i), setup: false };
+  const r1 = await run(p, pgRead, a.reply, a.busy || '');
+  await sleep(2000);
+  const r2 = await run(p, pgRead, a.reply, a.busy || '');
+  const changing = r1.text !== r2.text || r1.count !== r2.count;
+  return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_relayed: norm(r2.text) === R.seen[i] };
 }
 function modSystem() {
   const openQ = questions.filter((q) => !q.answered);
@@ -900,21 +909,22 @@ function modSystem() {
   return `You are the moderator inside "Journey Relay", Justin's desktop app that relays a conversation between two AI chat websites.
 AI 1 = ${aiName(0)} (${curUrl(panes[0])}). AI 2 = ${aiName(1)} (${curUrl(panes[1])}).
 
-How it works: each AI replies in a fixed format (NAME RESPONSE ### START / END, a NAME REQUESTS OTHER block, a USER REQUEST block, END OF TURN). The app copies the RESPONSE and REQUESTS blocks word-for-word to the other AI. Questions from USER REQUEST blocks are shown to Justin in this chat (as Q1, Q2…) and listed below.
+How it works: the relay is one switch. When it's ON, every finished reply from either AI is copied to the other AI (it only counts as finished when END OF TURN is the last thing in it and the page shows no sign of the AI still working). Justin can also type into either chat himself at any time. Each AI gets the relay rules once, with its first relayed message. Each AI replies in a fixed format (NAME RESPONSE ### START / END, a NAME REQUESTS OTHER block, a USER REQUEST block, END OF TURN). The app copies the RESPONSE and REQUESTS blocks word-for-word to the other AI. Questions from USER REQUEST blocks are shown to Justin in this chat (as Q1, Q2…) and listed below.
 
 Your job: Justin messages you here, usually on the go. Keep replies short and plain.
 - Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
-- If the relay is idle (finished or stopped) and Justin answers a question or says to keep going, record the answer and then call relay_control continue so the work picks up where it left off with his answer attached. Continue works with or without a task.
-- Never change relayed text unless Justin asks (edit_pending).
+- Answers ride along with the next message each AI receives. If the relay is OFF and Justin wants things moving again, turn it on; if nothing new is coming (both AIs are waiting), use relay_latest to send the last reply across so his answer goes out with it.
+- To pick up a conversation, use relay_latest from the side that spoke last.
+- Before sending anything or saying an AI is done, call check_panes. Never send to an AI that is still working, even if it already wrote END OF TURN.
 - Anything you send to the AIs (answers, your own messages, edits, a new task) shows Justin an approval card with the exact text, and nothing goes out until he clicks Send (he may edit it first). Just call the tool; don't ask for permission in text first. If he declines, ask what he'd like instead.
-- Control the relay when he asks (start, pause, resume, stop, automate, manual, pass).
+- Turn the relay on or off when he asks.
 - When he asks where things stand, answer from the summary and transcript.
 - Push back when the two AIs loop, drift off task, or miss something, and tell him.
 
 Relay: ${relayStatus()}
-Task: ${R.task || '(none yet)'}
+Goal: ${R.task || '(none set)'}
 Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
-${R.pending ? `Hop waiting for approval (${label(R.pending.from)} → ${label(R.pending.to)}):\n${short($('#pendingText').value, 1500)}\n` : ''}
+
 Open questions:
 ${openQ.map((q) => `Q${q.id} [${q.ai}, response ${q.num}]: ${q.text}`).join('\n') || '(none)'}
 Answered:
@@ -942,36 +952,33 @@ async function runTool(name, x) {
       renderQuestions(); refreshPendingNote(); autosave();
       addLog({ who: 'You', to: targets.map(label).join(' + '), text: x.answer, kind: 'answer' });
       if (x.deliver_now) {
-        if (R.running) return { queued: true, note: 'Relay is running, so it goes out with the next hop to each side.' };
+        if (R.on) return { queued: true, note: 'The relay is on, so it goes out with the next message to each side.' };
         for (const i of targets) {
           const t = R.queued[i].splice(0);
-          if (t.length) await typeAndSend(panes[i], 'USER RESPONSE\n' + t.join('\n\n'));
+          if (t.length) await sendOnly(i, 'USER RESPONSE\n' + t.join('\n\n'));
         }
         return { delivered: true, to: targets.map(label) };
       }
       return { queued: true, delivers: 'with the next message each target AI receives', resolved: ids, edited_by_justin: ok.edited ? ok.text : undefined };
     }
-    case 'relay_control': {
-      switch (x.action) {
-        case 'start': {
-          if (R.running) return { error: 'Already running' };
-          let task = x.task || $('#task').value;
-          if (x.task) { const ok = await askApproval('Start a new run with this task', x.task); if (!ok.ok) return DECLINED; task = ok.text; }
-          runRelay(task, x.start_pane ? x.start_pane - 1 : +$('#startFrom').value);
-          return { started: true };
-        }
-        case 'continue':
-          if (R.running) return { error: 'Already running' };
-          runRelay('', 0, true);
-          return { continuing: true };
-        case 'pause': if (!R.running) return { error: 'Not running' }; setPaused(true); return { paused: true };
-        case 'resume': if (!R.running) return { error: 'Not running' }; setPaused(false); return { resumed: true };
-        case 'stop': stopRelay(); return { stopped: true };
-        case 'automate': setAuto(true); return { automate: true };
-        case 'manual': setAuto(false); return { manual: true };
-        case 'pass': if (!R.pending) return { error: 'Nothing is waiting for approval' }; passPending(); return { passed: true };
-      }
-      return { error: 'Unknown action' };
+    case 'relay_control':
+      setRelay(x.action === 'on');
+      return { relay: R.on ? 'on' : 'off' };
+    case 'check_panes':
+      return { relay: relayStatus(), panes: await Promise.all([0, 1].map(paneState)) };
+    case 'relay_latest': {
+      const from = (x.from_pane | 0) - 1;
+      if (from !== 0 && from !== 1) return { error: 'from_pane must be 1 or 2' };
+      if (R.busy) return { error: 'The relay is busy sending. Try again in a moment.' };
+      const st = await paneState(from);
+      if (st.working) return { error: `${label(from)} (${aiName(from)}) is still working. Wait until it's done.`, state: st };
+      const text = await readLatest(from);
+      if (!text) return { error: `${label(from)} has no reply on screen.` };
+      const ok = await askApproval(`Send ${label(from)}'s latest reply → ${label(1 - from)} (${aiName(1 - from)})`, text);
+      if (!ok.ok) return DECLINED;
+      R.seen[from] = norm(text);
+      await relayFrom(from, ok.text, { force: true });
+      return { sent: true, to: label(1 - from) };
     }
     case 'read_pane': {
       const p = P(x.pane); const a = adapterFor(p);
@@ -980,24 +987,12 @@ async function runTool(name, x) {
       return { pane: p.label, reply_count: r.count, latest_reply: (r.text || '').slice(0, 10000) };
     }
     case 'send_to_pane': {
-      if (R.running && !R.paused) return { error: 'The relay is running. Pause it first (relay_control pause).' };
       const p = P(x.pane);
       const ok = await askApproval(`Message → ${p.label} (${aiName(p.i)})`, x.text);
       if (!ok.ok) return DECLINED;
-      x.text = ok.text;
-      addLog({ who: 'Moderator', to: p.label, text: x.text, kind: 'moderator' });
-      const reply = await sendAndWait(p.i, x.text, false);
-      addLog({ who: p.label, text: reply, kind: 'reply', turn: 0 });
-      if (R.running) R.resumeFrom = p.i;
-      summarizeSoon();
-      return { reply: reply.slice(0, 10000) };
-    }
-    case 'edit_pending': {
-      if (!R.pending) return { error: 'Nothing is waiting for approval' };
-      const ok = await askApproval('Replace the hop waiting to be passed', x.text);
-      if (!ok.ok) return DECLINED;
-      $('#pendingText').value = ok.text;
-      return { ok: true };
+      addLog({ who: 'Moderator', to: p.label, text: ok.text, kind: 'moderator' });
+      await sendOnly(p.i, ok.text);
+      return { sent: true, note: R.on ? 'Its reply will be relayed like any other.' : 'The relay is off, so its reply stays in that chat.' };
     }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
@@ -1098,7 +1093,7 @@ function sanitizeHistory(h) {
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', edit_pending: 'Edited the pending hop', set_options: 'Updated options' };
+const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
 async function moderatorSend(text) {
   if (modBusy || !text.trim()) return;
   if (!settings.apiKey) { modMsg('err', 'Add an Anthropic API key in ⚙ Settings to use the moderator.'); return; }
@@ -1187,10 +1182,11 @@ function exportTranscript() {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 function newSession() {
-  if (R.running) { note('Stop the relay before starting a new session.', true); return; }
+  if (R.busy) { note('Wait a moment: the relay is sending.', true); return; }
   session = null; chatLog.length = 0; $('#task').value = '';
   logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
   R.turn = 0; R.task = ''; R.queued = [[], []]; R.lastFrom = null; R.introduced = [false, false];
+  R.seen = ['', '']; R.rebase = [true, true];
   updateControls();
   refreshSessionList();
   renderSummary();
@@ -1239,7 +1235,7 @@ async function checkUpdate(silent) {
   }
 }
 async function applyUpdate() {
-  if (R.running) { note('Stop the relay before updating.', true); return; }
+  if (R.busy) { note('Wait a moment: the relay is sending.', true); return; }
   const b = $('#updateBtn');
   b.disabled = true; b.textContent = 'Updating…';
   const r = await window.api.applyUpdate();
@@ -1260,7 +1256,7 @@ function startNewSession() { session = { id: makeSessionId(), created: new Date(
 function snapshot() {
   return {
     id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '', name: session.name || '',
-    title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued,
+    title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued, seen: R.seen,
     questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
     logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
   };
@@ -1291,6 +1287,7 @@ function applySession(j, loadUrls) {
   session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '', name: j.name || '' };
   R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
   R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
+  R.seen = j.seen || ['', '']; R.rebase = [!R.seen[0], !R.seen[1]];
   questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
   logEntries.length = 0; (j.logEntries || []).forEach((e) => logEntries.push({ ...e, time: new Date(e.time) }));
   summaryText = j.summaryText || ''; renderSummary();
@@ -1305,7 +1302,7 @@ function applySession(j, loadUrls) {
   updateControls();
 }
 async function switchSession(id) {
-  if (R.running) { note('Stop the relay before switching sessions.', true); refreshSessionList(); return; }
+  if (R.busy) { note('Wait a moment: the relay is sending.', true); refreshSessionList(); return; }
   if (!id) { newSession(); return; }
   const j = await window.api.loadSession(id);
   if (!j) { note('Could not open that session.', true); return; }
@@ -1350,14 +1347,8 @@ async function init() {
   $('#renameSave').onclick = doRename;
   $('#renameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doRename(); } if (e.key === 'Escape') { e.stopPropagation(); showRename(false); } });
   refreshSessionList();
-  $('#startBtn').onclick = () => { window.__setMenu(false); runRelay($('#task').value, +$('#startFrom').value); };
-  $('#contBtn').onclick = () => { window.__setMenu(false); runRelay('', 0, true); };
-  $('#autoBtn').onclick = () => setAuto(!R.auto);
-  $('#pendingAutoBtn').onclick = () => setAuto(!R.auto);
-  $('#pauseBtn').onclick = () => setPaused(!R.paused);
-  $('#stopBtn').onclick = stopRelay;
-  $('#passBtn').onclick = passPending;
-  $('#editBtn').onclick = () => { const ta = $('#pendingText'); ta.readOnly = !ta.readOnly; $('#editBtn').textContent = ta.readOnly ? 'Edit' : 'Lock'; if (!ta.readOnly) ta.focus(); };
+  $('#relayBtn').onclick = () => setRelay(!R.on);
+  $('#task').addEventListener('change', () => { R.task = $('#task').value.trim(); autosave(); });
   $('#maxTurns').onchange = updateControls;
   $('#settingsBtn').onclick = () => { window.__setMenu(false); openSettings(); };
   $('#settingsForm').addEventListener('submit', submitSettings);
@@ -1381,10 +1372,10 @@ async function init() {
   };
   $('#updateBtn').onclick = applyUpdate;
   $('#version').ondblclick = () => checkUpdate(false);
-  R.auto = settings.auto !== false;
+  setInterval(tick, 1200);
   window.api.driveInfo().then((d) => { if (!d.found) note('Google Drive for desktop wasn\'t found, so shared files will save to Documents/Journey Relay. Install Drive for desktop to save them to Drive.', true); });
   updateControls();
-  if (!R.task) window.__setMenu(true);
+  if (settings.auto !== false) setTimeout(() => setRelay(true, 'Relay on. Replies from either AI are copied to the other.'), 1500);
   checkUpdate(true);
   setInterval(() => checkUpdate(true), 30 * 60 * 1000);
 }

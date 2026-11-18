@@ -71,6 +71,7 @@ module.exports = (win, app) => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   win.webContents.on('did-finish-load', async () => {
     step('loaded');
+    const chat = () => js(`[...document.querySelectorAll('#modChat .m')].map(m => m.className.replace('m ', '') + ': ' + m.textContent.replace(/\\n/g, ' / ').slice(0, 150))`);
     try {
       await sleep(1500);
       await js(`
@@ -81,70 +82,34 @@ module.exports = (win, app) => {
         panes[0].wv.loadURL('http://localhost:8001'); panes[1].wv.loadURL('http://localhost:8002');
         panes[0].nameInput.value = 'ALPHA'; panes[1].nameInput.value = 'BETA';
         true`);
-      step('panes loading');
-      await sleep(2500);
-      step('urls: ' + await js('panes.map(p => curUrl(p)).join(" ")'));
-      await js('window.__dbg = true');
-      js(`runRelay('Write a one-line slogan for a concrete company', 0)`);
-      // Manual first hop: wait for the pending box, then pass and switch to Automate
-      for (let k = 0; k < 60; k++) { if (await js('!!R.pending')) break; await sleep(500); }
-      step('pending? ' + await js('!!R.pending') + ' phase=' + await js('R.phase'));
-      const pendingText = await js(`$('#pendingText').value`);
-      await js('passPending(); true');
-      // Answer the question via the moderator once it appears
-      for (let k = 0; k < 60; k++) { if (await js('questions.length > 0')) break; await sleep(500); }
-      step('questions ' + await js('questions.length'));
+      await sleep(3000);
+      step('relay on? ' + await js('R.on') + ' | button=' + await js(`$('#relayBtn').textContent + ' / ' + $('#relayState').textContent`));
+      // Justin types into AI 1 himself
+      await js(`typeAndSend(panes[0], 'Write a one-line slogan for a concrete company'); true`);
+      for (let k = 0; k < 120; k++) { if (await js('questions.length > 0')) break; await sleep(500); }
+      step('question: ' + await js('questions.map(q => q.text).join(" | ")'));
       await js(`moderatorSend('budget is 40k'); true`);
       for (let k = 0; k < 20; k++) { if (await js(`!!document.querySelector('.m.approve:not(.ok):not(.no) .ap-ok')`)) break; await sleep(250); }
-      console.log('approval card: ' + await js(`(document.querySelector('.m.approve .ap-title')||{}).textContent + ' | ' + (document.querySelector('.m.approve textarea')||{}).value`));
-      console.log('queued before approve: ' + await js('R.queued[0].length + R.queued[1].length'));
+      step('approval card: ' + await js(`(document.querySelector('.m.approve .ap-title')||{}).textContent`));
       await js(`document.querySelector('.m.approve .ap-ok').click(); true`);
-      await sleep(1500);
       await js(`setInterval(() => { const b = document.querySelector('.m.approve:not(.ok):not(.no) .ap-ok'); if (b) b.click(); }, 300); true`);
-      console.log('queued after approve: ' + await js('R.queued[0].length + R.queued[1].length') + ' | model=' + await js('settings.modModel'));
-      await js('setAuto(true); true');
-      for (let k = 0; k < 240; k++) { if (!(await js('R.running'))) break; await sleep(500); }
-      await sleep(1500);
-      const result = await js(`({
-        log: logEntries.map(e => e.kind + ' | ' + e.who + (e.to ? ' -> ' + e.to : '') + ' | ' + e.text.replace(/\\n/g, ' / ').slice(0, 110)),
-        questions: questions.map(q => ({ id: q.id, ai: q.ai, text: q.text, answered: q.answered })),
-        summary: summaryText,
-        chat: [...document.querySelectorAll('#modChat .m')].map(m => m.className + ': ' + m.textContent.replace(/\\n/g, ' / ')),
-        turn: R.turn
-      })`);
-      await sleep(1500);
-      console.log('sessions: ' + JSON.stringify(await js('window.api.listSessions()')));
-      await js(`(async () => { const l = await window.api.listSessions(); R.task = ''; R.lastFrom = null; questions.length = 0; logEntries.length = 0; chatLog.length = 0; const j = await window.api.loadSession(l[0].id); applySession(j, false); return true; })()`);
-      console.log('restored: ' + await js('R.task + " | lastFrom=" + R.lastFrom + " | log=" + logEntries.length + " | chat=" + chatLog.length + " | sel=" + $("#sessionSel").options.length'));
-      await js(`document.getElementById('renameBtn').click(); document.getElementById('renameInput').value = 'Concrete slogan test'; document.getElementById('renameSave').click(); true`);
-      await sleep(800);
-      console.log('renamed: ' + await js(`$('#sessionSel').selectedOptions[0].textContent + ' | ' + document.title`));
-      console.log('=== CONTINUE TEST ===');
-      console.log('buttons: ' + await js(`$('#startBtn').textContent + ' / cont hidden=' + $('#contBtn').classList.contains('hidden')`));
-      await js(`runTool('answer_questions', { answer: 'Use 12.531 ft.', to: 'both' })`);
-      js(`runRelay('', 0, true)`);
-      await sleep(1000);
-      for (let k = 0; k < 120; k++) { if (!(await js('R.running'))) break; await sleep(500); }
-      console.log('after continue: ' + JSON.stringify(await js(`[...document.querySelectorAll('#modChat .m.sys')].slice(-4).map(m => m.textContent)`)));
-      await js('window.api.newWindow()'); await sleep(4000);
-      const wins = require('electron').BrowserWindow.getAllWindows();
-      const other = wins.find((w) => w !== win);
-      console.log('windows: ' + wins.length + ' | second window task="' + (other ? await other.webContents.executeJavaScript('R.task') : 'n/a') + '" title=' + (other ? await other.webContents.executeJavaScript('document.title') : '') + ' | first title=' + await js('document.title'));
-      if (other) other.close();
-      const kids = win.contentView.children;
-      console.log('views: ' + kids.length + ' bounds=' + JSON.stringify(kids.map((v) => v.getBounds())));
-      const img0 = await kids[0].webContents.capturePage(); require('fs').writeFileSync('/tmp/jp-view0.png', img0.toPNG());
+      for (let k = 0; k < 400; k++) { if (!(await js('R.on'))) break; await sleep(500); }
+      step('relay after run: on=' + await js('R.on') + ' turns=' + await js('R.turn'));
+      console.log('=== CHAT ===\n' + (await chat()).join('\n'));
       console.log('BETA files: ' + JSON.stringify(await js(`panes[1].wv.executeJavaScript('window.files')`)));
-      console.log('drive dir: ' + JSON.stringify(require('child_process').execSync('find "/tmp/fakedrive" -type f').toString().trim().split('\n')));
-      const dup = await js(`window.api.driveSave({ folder: session.driveFolder, name: '002-ALPHA-calc.html', content: 'x' })`);
-      console.log('duplicate name saved as: ' + dup.name + ' | auto=' + await js('R.auto'));
       const recvA = await js(`panes[0].wv.executeJavaScript('window.received')`);
       const recvB = await js(`panes[1].wv.executeJavaScript('window.received')`);
-      console.log('=== PENDING (first hop, manual) ===\n' + pendingText.slice(-400));
-      console.log('=== RESULT ===\n' + JSON.stringify(result, null, 2));
-      console.log('=== ALPHA received ===\n' + recvA.map((t, i) => `#${i + 1}: ` + t.replace(/\n/g, ' / ').slice(-300)).join('\n'));
-      console.log('=== BETA received ===\n' + recvB.map((t, i) => `#${i + 1}: ` + t.replace(/\n/g, ' / ').slice(-300)).join('\n'));
-      console.log('=== API calls ===\n' + apiLog.join(', '));
+      console.log('=== ALPHA received ===\n' + recvA.map((t, i) => `#${i + 1}: ` + t.replace(/\n/g, ' / ').slice(0, 160) + ' … ' + t.replace(/\n/g, ' / ').slice(-90)).join('\n'));
+      console.log('=== BETA received ===\n' + recvB.map((t, i) => `#${i + 1}: ` + t.replace(/\n/g, ' / ').slice(0, 160) + ' … ' + t.replace(/\n/g, ' / ').slice(-90)).join('\n'));
+      // Pick up via the moderator tool: send BETA's last reply to ALPHA
+      const before = recvA.length;
+      const res = await js(`runTool('relay_latest', { from_pane: 2 })`);
+      await sleep(2000);
+      console.log('pick-up result: ' + JSON.stringify(res) + ' | ALPHA got ' + ((await js(`panes[0].wv.executeJavaScript('window.received.length')`)) - before) + ' new message(s)');
+      // Restart restore
+      await sleep(1500);
+      await js(`(async () => { const l = await window.api.listSessions(); R.seen = ['', '']; logEntries.length = 0; chatLog.length = 0; const j = await window.api.loadSession(l[0].id); applySession(j, false); return true; })()`);
+      console.log('restored: seen set=' + await js('R.seen.map(x => !!x).join(",")') + ' log=' + await js('logEntries.length'));
     } catch (e) {
       console.log('SELFTEST ERROR', e);
     }

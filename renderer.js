@@ -12,13 +12,13 @@ class Stop extends Error { constructor() { super('stopped'); } }
 const PRESETS = [
   { hosts: ['chatgpt.com', 'chat.openai.com'], name: 'ChatGPT', ai: 'CHATGPT',
     input: '#prompt-textarea, div[aria-label="Work with ChatGPT"]', reply: '[data-message-author-role="assistant"]',
-    send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]' },
+    send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]', user: '[data-message-author-role="user"]' },
   { hosts: ['claude.ai'], name: 'Claude', ai: 'CLAUDE',
     input: '[data-testid="chat-input"], div[contenteditable="true"].ProseMirror', reply: 'div[data-testid="assistant-message"], .font-claude-response, .font-claude-message',
-    send: 'button[aria-label="Send message"], button[aria-label="Send Message"]', busy: '[data-is-streaming="true"], button[aria-label="Stop response"]' },
+    send: 'button[aria-label="Send message"], button[aria-label="Send Message"]', busy: '[data-is-streaming="true"], button[aria-label="Stop response"]', user: '[data-testid="user-message"]' },
   { hosts: ['gemini.google.com'], name: 'Gemini', ai: 'GEMINI',
     input: 'rich-textarea .ql-editor, div[contenteditable="true"]', reply: 'model-response message-content, message-content',
-    send: 'button.send-button, button[aria-label="Send message"]', busy: 'button[aria-label="Stop response"]' },
+    send: 'button.send-button, button[aria-label="Send message"]', busy: 'button[aria-label="Stop response"]', user: 'user-query' },
   { hosts: ['grok.com'], name: 'Grok', ai: 'GROK',
     input: 'textarea, div[contenteditable="true"]', reply: '.message-bubble', send: 'button[type="submit"]', busy: '' }
 ];
@@ -46,7 +46,13 @@ const R = {
   seen: ['', ''],          // last reply already handled in each pane (so old replies aren't re-sent)
   rebase: [false, false],  // pane switched to a different chat: re-read its starting point
   lastSent: ['', ''],      // start of what we last pasted into each pane (ignore it if it shows up as a "reply")
-  pending: null            // legacy (manual Pass mode removed)
+  pending: null,           // legacy (manual Pass mode removed)
+  ledger: [],              // delivery records (no message text once settled)
+  inflight: null,          // id of the delivery waiting to be confirmed or answered
+  known: [[], []],         // canonical hashes already handled per pane
+  held: [],                // messages captured but deliberately not sent
+  blocker: '',             // why the relay paused itself
+  sideChat: [false, false] // the next reply in this pane answers a side message: don't forward it
 };
 const stab = [null, null];
 
@@ -59,7 +65,7 @@ function adapterFor(p) {
   if (!h) return null;
   const t = settings.adapters[h];
   const pr = presetFor(h);
-  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), busy: t.busy || (pr && pr.busy) || '', source: 'taught' };
+  if (t && (!pr || t.override)) return { ...t, ai: t.ai || (pr && pr.ai), busy: t.busy || (pr && pr.busy) || '', user: t.user || (pr && pr.user) || '', source: 'taught' };
   return pr ? { ...pr, source: 'preset' } : null;
 }
 function defaultAiName(i) {
@@ -82,7 +88,7 @@ function run(p, fn, ...args) {
 }
 
 // ---------- Functions that run INSIDE the websites (self-contained) ----------
-function pgRead(sel, busySel) {
+function pgRead(sel, busySel, userSel) {
   const vis = (e) => e.getClientRects().length > 0;
   let els;
   try { els = [...document.querySelectorAll(sel)].filter(vis); } catch (e) { return { error: 'bad selector', count: 0, text: '', busy: false }; }
@@ -95,7 +101,17 @@ function pgRead(sel, busySel) {
       busy = [...document.querySelectorAll('[data-testid="stop-button"], [data-is-streaming="true"], button[aria-label*="Stop" i], button[aria-label*="Cancel response" i]')].some(vis);
     } catch (e) {}
   }
-  return { count: els.length, text: last ? (last.innerText || '').trim() : '', busy };
+  const idOf = (el) => { for (let n = el, d = 0; n && n.getAttribute && d < 4; n = n.parentElement, d++) { const v = n.getAttribute('data-message-id') || n.getAttribute('data-turn-id'); if (v) return v; } return ''; };
+  let userCount = -1, userLast = '';
+  if (userSel) {
+    try {
+      const us = [...document.querySelectorAll(userSel)].filter(vis);
+      userCount = us.length;
+      const lu = us[us.length - 1];
+      userLast = lu ? (lu.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+    } catch (e) {}
+  }
+  return { count: els.length, text: last ? (last.innerText || '').trim() : '', busy, id: last ? idOf(last) : '', userCount, userLast };
 }
 function pgFocusInput(sel, clear) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -494,11 +510,14 @@ async function typeAndSend(p, text, sendTries = 5) {
   let clicked = false;
   if (a.send) for (let k = 0; k < sendTries && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(500); }
   if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
-  await sleep(1500);
-  const left = norm(await run(p, pgInputText, a.input));
-  if (window.__dbg) console.log('[dbg] sent to ' + p.label + ' | boxes: ' + JSON.stringify(await Promise.all(panes.map((q) => run(q, pgInputText, '#box')))));
-  if (left && norm(text).startsWith(left.slice(0, 40))) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
   if (document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you
+  return { clicked };
+}
+// Press send again only when the text is still sitting in the box (so it can't be a double submit)
+async function pressSendAgain(p) {
+  const a = adapterFor(p);
+  let clicked = a.send ? await run(p, pgClickSend, a.send) : false;
+  if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
 }
 async function waitForReply(p, before, sent, abortable) {
   const a = adapterFor(p);
@@ -650,62 +669,335 @@ function setRelay(on, why) {
   R.on = on;
   if (on) {
     R.turn = 0; R.complete = [false, false]; stab[0] = stab[1] = null;
-    for (const i of [0, 1]) if (!R.seen[i]) R.rebase[i] = true; // fresh: start from whatever is on screen now
+    R.blocker = '';
+    for (const i of [0, 1]) if (!R.known[i].length) R.rebase[i] = true; // fresh: start from whatever is on screen now
     note(why || 'Relay on. Replies from either AI are copied to the other.');
   } else { note(why || 'Relay off.'); summarizeSoon(); }
   if (settings.auto !== on && !why) { settings.auto = on; saveSettings(); } // remember your choice (not auto-stops)
   updateControls();
+  refreshDelivery();
   autosave();
 }
 
-// A reply counts as finished only if END OF TURN is the last thing in it (allowing a few chars of site UI)
-const endsWithEot = (t) => { const k = t.lastIndexOf('END OF TURN'); return k >= 0 && t.slice(k + 11).trim().length <= 40; };
 
 // Watch both panes; relay any reply that's finished and new
+// Called when a pane moves to a different chat: start fresh there; anything in flight with that chat is cancelled
+function paneChatChanged(i) {
+  R.rebase[i] = true;
+  R.introduced[i] = false;
+  stab[i] = null;
+  const fl = inflight();
+  if (fl && (fl.to === i || fl.from === i)) { setState(fl, 'cancelled'); R.inflight = null; note(`${label(i)} switched to a different chat, so the delivery in progress was cancelled.`, true); }
+  autosave();
+}
+
+// ================= Delivery ledger =================
+// Every relayed message gets a durable identity (conversation + site message id + hash of its canonical text).
+// Site UI that changes on its own ("27 minutes ago", icon glyphs, tool-status lines) is stripped before hashing,
+// so the same message can never look new again. Each delivery moves through:
+//   captured → queued → (submitted) awaiting → completed      or      uncertain → checked before any resend
+const UI_LINE = /^(?:\d+\s+(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s+ago|an? (?:second|minute|hour|day|week|month|year) ago|just now|yesterday|today|edited)$/i;
+function canonicalText(raw) {
+  let t = String(raw || '').replace(/\r/g, '');
+  const k = t.lastIndexOf('END OF TURN');
+  if (k >= 0) t = t.slice(0, k + 11); // site UI after the end marker
+  const starts = [...t.matchAll(/[A-Z0-9][A-Z0-9_\-]*(?: [A-Z0-9][A-Z0-9_\-]*){0,2} RESPONSE (?:\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) START\b/g)];
+  if (starts.length > 1) t = t.slice(starts[starts.length - 1].index); // tool-status lines printed before a repeated START
+  return t.split('\n').map((l) => l.replace(/[\uE000-\uF8FF]/g, '').trim()).filter((l) => l && !UI_LINE.test(l)).join('\n');
+}
+function hashText(str) { // cyrb53: fast, stable, good enough to tell messages apart
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+}
+const msgKey = (raw) => (raw ? hashText(norm(canonicalText(raw))) : '');
+const convKey = (i) => chatPath(curUrl(panes[i])) || `pane${i + 1}`;
+const nowIso = () => new Date().toISOString();
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '?');
+const knownHas = (i, k) => R.known[i].includes(k);
+function knownAdd(i, k) { if (k && !knownHas(i, k)) { R.known[i].push(k); if (R.known[i].length > 400) R.known[i].splice(0, R.known[i].length - 400); } }
+const ledgerGet = (id) => R.ledger.find((x) => x.id === id);
+const inflight = () => (R.inflight ? ledgerGet(R.inflight) : null);
+const ACTIVE = ['queued', 'uncertain', 'awaiting'];
+async function saveNow() {
+  clearTimeout(saveTimer);
+  if (!session) startNewSession();
+  try { await window.api.saveSession(snapshot()); } catch {}
+}
+function setState(e, st, extra = {}) {
+  e.state = st;
+  e[st + 'At'] = nowIso();
+  Object.assign(e, extra);
+  if (!ACTIVE.includes(st)) { delete e.out; delete e.files; } // keep the session file lean once a delivery is settled
+  refreshDelivery();
+  return saveNow(); // durable before the next step touches a site
+}
+async function readPane(i) {
+  const p = panes[i]; const a = adapterFor(p);
+  if (!a) return null;
+  const r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
+  r.key = msgKey(r.text);
+  return r;
+}
+function block(why) {
+  R.blocker = why;
+  if (R.on) setRelay(false, `Paused: ${why}`);
+  else note(`Paused: ${why}`, true);
+  refreshDelivery();
+}
+function holdMessage(i, text, key, num, why) {
+  if (!R.held.some((h) => h.key === key)) R.held.push({ key, from: i, num: num || '', text, at: nowIso(), why });
+  note(`Held ${label(i)} RESPONSE ${num || '?'} (${why}). It has not been sent. Ask the moderator to send it, or to drop it.`, true);
+  refreshDelivery();
+  saveNow();
+}
+
 let ticking = false; // one check at a time, so a reply can never be sent twice
 const working = [false, false];
-const lastText = ['', ''];
+const lastKey = ['', ''];
 async function tick() {
   if (R.busy || ticking) return;
   ticking = true;
   try { await tickOnce(); } finally { ticking = false; }
 }
+// A reply counts as finished only if END OF TURN is the last thing in it (allowing a few chars of site UI)
+const endsWithEot = (t) => { const k = t.lastIndexOf('END OF TURN'); return k >= 0 && t.slice(k + 11).replace(/[\uE000-\uF8FF]/g, '').trim().length <= 60; };
+// The destination's reply is "new" only if its content differs from what was there before we sent AND
+// a new message element appeared (count went up or the site's message id changed).
+const isNewReplyFor = (fl, r) => !!r.key && r.key !== fl.base.hash && (r.count > fl.base.count || (!!r.id && r.id !== fl.base.id));
+
 async function tickOnce() {
   const stableMs = Math.max(3, settings.stableSec || 2) * 1000;
   const fallbackMs = (settings.fallbackSec || 90) * 1000;
+  const reads = [];
   for (const i of [0, 1]) {
-    const p = panes[i]; const a = adapterFor(p);
-    if (!a) continue;
-    let r;
-    try { r = await run(p, pgRead, a.reply, a.busy || ''); } catch { continue; }
-    const t = r.text || '';
-    const w = !!r.busy || (t !== lastText[i] && !!lastText[i]);
-    lastText[i] = t;
+    let r = null;
+    try { r = await readPane(i); } catch {}
+    reads[i] = r;
+    if (!r) continue;
+    const w = !!r.busy || (r.key !== lastKey[i] && !!lastKey[i]);
+    lastKey[i] = r.key;
     if (w !== working[i]) { working[i] = w; refreshBusy(); }
-    if (!R.on) continue;
-    if (R.rebase[i]) { R.seen[i] = norm(t); R.rebase[i] = false; stab[i] = null; continue; }
-    if (!t || r.busy) { if (r.busy && t && norm(t) !== R.seen[i]) setPhase(`${label(i)} is working…`); stab[i] = null; continue; }
-    const n = norm(t);
-    if (n === R.seen[i]) continue;
-    if (R.lastSent[i] && n.startsWith(R.lastSent[i])) { R.seen[i] = n; continue; } // our own paste echoed back
-    if (!stab[i] || stab[i].t !== t) { stab[i] = { t, since: Date.now() }; setPhase(`${label(i)} is replying…`); continue; }
-    const waitMs = endsWithEot(t) ? stableMs : fallbackMs;
-    if (Date.now() - stab[i].since < waitMs) continue;
-    // Final check: make sure the AI really is done (no new text, nothing running) before relaying
-    setPhase(`Checking ${label(i)} is done…`);
-    await sleep(3000);
-    let r2;
-    try { r2 = await run(p, pgRead, a.reply, a.busy || ''); } catch { continue; }
-    if (r2.busy || r2.text !== t || r2.count !== r.count) { stab[i] = null; continue; }
-    R.seen[i] = n; stab[i] = null;
-    await relayFrom(i, t);
+  }
+  if (!R.on) return;
+  const fl = inflight();
+  // 1) An unconfirmed delivery is resolved by looking at the destination before anything else happens
+  if (fl && (fl.state === 'queued' || fl.state === 'uncertain')) { await reconcile(fl, reads[fl.to]); return; }
+  // 2) Waiting too long for a reply
+  if (fl && fl.state === 'awaiting' && Date.now() - new Date(fl.awaitingAt || fl.queuedAt).getTime() > (settings.timeoutMin || 60) * 60000) {
+    block(`no reply from ${label(fl.to)} (${aiName(fl.to)}) ${settings.timeoutMin || 60} min after delivering ${label(fl.from)} RESPONSE ${fl.num || '?'}.`);
     return;
   }
-  if (R.on && !R.busy) setPhase(working[0] || working[1] ? `${label(working[0] ? 0 : 1)} is working…` : 'On · waiting for a reply');
+  for (const i of [0, 1]) {
+    const r = reads[i];
+    if (!r) continue;
+    if (R.rebase[i]) { knownAdd(i, r.key); R.rebase[i] = false; stab[i] = null; continue; }
+    if (!r.text || r.busy) { stab[i] = null; continue; }
+    if (knownHas(i, r.key)) { stab[i] = null; continue; } // already handled: timestamps or UI changes don't make it new
+    if (fl && fl.to === i && !isNewReplyFor(fl, r)) continue; // still the previous reply, not the answer to what we sent
+    if (R.lastSent[i] && norm(r.text).startsWith(R.lastSent[i])) { knownAdd(i, r.key); continue; } // our own paste echoed back
+    if (!stab[i] || stab[i].key !== r.key) { stab[i] = { key: r.key, since: Date.now() }; setPhase(`${label(i)} is replying…`); continue; }
+    const waitMs = endsWithEot(r.text) ? stableMs : fallbackMs;
+    if (Date.now() - stab[i].since < waitMs) continue;
+    // Final check: the AI really is done (same content, nothing running) before anything is relayed
+    setPhase(`Checking ${label(i)} is done…`);
+    await sleep(3000);
+    let r2 = null;
+    try { r2 = await readPane(i); } catch {}
+    if (!r2 || r2.busy || r2.key !== r.key || r2.count !== r.count) { stab[i] = null; continue; }
+    stab[i] = null;
+    knownAdd(i, r2.key);
+    await onFinished(i, r2);
+    return;
+  }
+  if (R.on && !R.busy) setPhase(working[0] || working[1] ? `${label(working[0] ? 0 : 1)} is working…` : (inflight() ? `Waiting for ${label(inflight().to)}'s reply` : 'On · waiting for a reply'));
+}
+
+// A finished, never-seen message from pane i
+async function onFinished(i, r) {
+  const fl = inflight();
+  if (fl && fl.to === i) {
+    await setState(fl, 'completed', { responseHash: r.key });
+    R.inflight = null;
+  } else if (fl) {
+    // A new message from the side we are NOT waiting on (e.g. a revision, or something typed there directly)
+    if (parseTurn(r.text)) { addLog({ who: label(i), text: r.text, kind: 'reply', turn: R.turn, num: (parseTurn(r.text) || {}).num }); holdMessage(i, r.text, r.key, (parseTurn(r.text) || {}).num, `it arrived while waiting for ${label(fl.to)}'s reply to RESPONSE ${fl.num || '?'}`); }
+    else note(`${label(i)} posted a message without relay markers while waiting on ${label(fl.to)}. Treated as a side conversation; not forwarded.`);
+    return;
+  }
+  await route(i, r.text, r.key);
+}
+
+// Decide what happens to a finished message from pane i, then deliver it to the other pane
+async function route(i, text, key, opts = {}) {
+  R.busy = true;
+  updateControls();
+  try {
+    const parsed = parseTurn(text);
+    addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: parsed ? parsed.num : '' });
+    if (R.sideChat[i] && !opts.force) { R.sideChat[i] = false; note(`${label(i)} answered a side message. Not forwarded.`); return; }
+    if (!parsed && !opts.force) { note(`${label(i)} replied without relay markers, so it was treated as a side conversation and not forwarded. Ask the moderator to send it if you want it relayed.`); return; }
+    const p = parsed || { name: aiName(i), num: '', payload: text.trim(), files: [], response: text, requests: '', userRequest: '', complete: false, hasEnd: false };
+    // Same message already delivered from this pane? (identity = canonical content, not response number or commit)
+    const dup = R.ledger.find((x) => x.from === i && x.hash === key && x.state !== 'cancelled');
+    if (dup && !opts.allowRepeat) { note(`Skipped a repeat of ${label(i)} RESPONSE ${p.num || '?'}: identical to the message already delivered at ${fmtTime(dup.awaitingAt || dup.queuedAt)}.`); return; }
+    // Loop guard: the same response number keeps coming back with changes
+    const recent = Date.now() - 20 * 60000;
+    const sameNum = p.num ? R.ledger.filter((x) => x.from === i && x.num === p.num && x.state !== 'cancelled' && new Date(x.queuedAt || x.capturedAt).getTime() > recent) : [];
+    if (sameNum.length >= 2 && !opts.force) {
+      holdMessage(i, text, key, p.num, 'possible loop');
+      block(`possible loop. ${label(i)} RESPONSE ${p.num} has already been delivered ${sameNum.length} times in the last 20 minutes. The newest version is held, not sent.`);
+      return;
+    }
+    if (p.files && p.files.length) await saveReplyFiles(i, p);
+    R.lastFrom = i;
+    R.complete[i] = !!p.complete;
+    const qBefore = questions.length;
+    if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
+    if (!opts.force) {
+      if (R.complete[0] && R.complete[1]) { setRelay(false, 'Both AIs wrote SESSION COMPLETE. Relay off.'); summarizeSoon(); return; }
+      if (R.turn >= maxTurns()) { holdMessage(i, text, key, p.num, `max turns (${maxTurns()}) reached`); setRelay(false, `Reached ${maxTurns()} turns. Relay off. The last message is held: turn the relay on and ask the moderator to send it.`); summarizeSoon(); return; }
+      if ($('#pauseOnQ').checked && questions.length > qBefore) { holdMessage(i, text, key, p.num, 'waiting for your answer'); setRelay(false, 'Relay off so you can answer the question. The message is held and goes out (with your answer) when you ask the moderator to send it.'); return; }
+    }
+    await deliver(i, p, key);
+  } catch (e) {
+    note('Error: ' + e.message, true);
+    if (R.on) setRelay(false, 'Relay off because of the error above. Fix it and turn the relay back on.');
+  } finally {
+    R.busy = false;
+    updateControls();
+    autosave();
+  }
+}
+
+async function deliver(i, p, key) {
+  const to = 1 - i;
+  const hop = hopContent(p);
+  let out = hop.text;
+  if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(i)}'s latest reply.\n\n` + out;
+  const answers = R.queued[to].length;
+  if (answers) out += '\n\nUSER RESPONSE\n' + R.queued[to].join('\n\n');
+  const base = await readPane(to);
+  const e = {
+    id: `${convKey(i)}|${key}`, from: i, to, conv: convKey(i), dest: convKey(to), hash: key, num: p.num || '',
+    state: 'captured', capturedAt: nowIso(), attempts: 0, answers, introduces: !R.introduced[to],
+    base: { count: base ? base.count : 0, id: base ? base.id : '', hash: base ? base.key : '', userCount: base ? base.userCount : -1 },
+    headHash: hashText(norm(out).slice(0, 120)),
+    out, files: hop.files.map((f) => ({ name: f.name, content: f.content })), fileCount: hop.files.length
+  };
+  R.ledger.push(e);
+  if (R.ledger.length > 150) R.ledger.splice(0, R.ledger.length - 150);
+  R.inflight = e.id;
+  await submit(e);
+}
+
+// Paste + send, then confirm it was actually submitted (a new user message appeared, or the box emptied)
+async function submit(e) {
+  await setState(e, 'queued');
+  e.attempts++;
+  await sendOnly(e.to, e.out, e.files || []);
+  const v = await verifySubmitted(e);
+  if (v === 'yes') await markSubmitted(e);
+  else { await setState(e, 'uncertain'); note(`Couldn't confirm that ${label(e.to)} received ${label(e.from)} RESPONSE ${e.num || '?'} yet. Checking before doing anything else.`); }
+}
+async function verifySubmitted(e) {
+  const p = panes[e.to]; const a = adapterFor(p);
+  for (let k = 0; k < 8; k++) {
+    await sleep(750);
+    const r = await readPane(e.to);
+    if (!r) continue;
+    if (r.userCount >= 0 && r.userCount > e.base.userCount) return 'yes';
+    if (r.count > e.base.count || r.busy) return 'yes'; // the AI already started answering
+    if (r.userCount < 0) { const left = norm(await run(p, pgInputText, a.input)); if (!left) return 'yes'; }
+  }
+  return 'unknown';
+}
+async function markSubmitted(e) {
+  if (e.answers) R.queued[e.to].splice(0, e.answers); // your answers are removed only once they really went out
+  if (e.introduces) R.introduced[e.to] = true;
+  R.turn++;
+  hopsSinceSummary++;
+  if (hopsSinceSummary >= 2 || !summaryText) summarizeSoon();
+  await setState(e, 'awaiting');
+  note(`Passed ${label(e.from)} → ${label(e.to)}${e.answers ? ' + your answer' : ''}${e.fileCount ? ` + ${e.fileCount} file${e.fileCount > 1 ? 's' : ''}` : ''}.`);
+}
+// Delivery is uncertain (lost confirmation, crash, restart): look at the destination before resending anything
+async function reconcile(e, r) {
+  const p = panes[e.to]; const a = adapterFor(p);
+  if (!a) return;
+  if (!r) { try { r = await readPane(e.to); } catch { return; } }
+  if (!r) return;
+  if (isNewReplyFor(e, r) || r.count > e.base.count) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }
+  if (r.userCount >= 0 && r.userCount > e.base.userCount) {
+    const matches = !r.userLast || hashText(norm(r.userLast).slice(0, 120)) === e.headHash || norm(e.out || '').startsWith(norm(r.userLast).slice(0, 60));
+    if (matches || !e.out) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }
+    block(`${label(e.to)} shows a new message I can't match to ${label(e.from)} RESPONSE ${e.num || '?'}. Look at ${label(e.to)} and tell the moderator "it arrived" or "resend".`);
+    return;
+  }
+  // Give a slow site time to show the message before judging, so we never press send on something already submitted
+  if (Date.now() - new Date(e.queuedAt).getTime() < 15000) { setPhase(`Checking whether ${label(e.to)} received it…`); return; }
+  // Not there. If the text is still sitting in the box, it was never submitted: press send.
+  const left = norm(await run(p, pgInputText, a.input));
+  if (left && e.out && norm(e.out).startsWith(left.slice(0, 40))) {
+    await pressSendAgain(p);
+    if ((await verifySubmitted(e)) === 'yes') { await markSubmitted(e); return; }
+  }
+  if (r.userCount < 0) { block(`delivery to ${label(e.to)} is uncertain and this site doesn't let me confirm it. Look at ${label(e.to)}: if ${label(e.from)} RESPONSE ${e.num || '?'} is there, tell the moderator "it arrived"; if not, "resend".`); return; }
+  if (!e.out) { block(`delivery of ${label(e.from)} RESPONSE ${e.num || '?'} to ${label(e.to)} didn't go through, and its text wasn't kept after the restart. Ask the moderator to send ${label(e.from)}'s latest reply again.`); return; }
+  if (e.attempts >= 2) { block(`couldn't deliver ${label(e.from)} RESPONSE ${e.num || '?'} to ${label(e.to)} after ${e.attempts} tries. Check ${label(e.to)}.`); return; }
+  note(`Checked ${label(e.to)}: ${label(e.from)} RESPONSE ${e.num || '?'} isn't there. Sending it once more.`);
+  await submit(e);
+}
+
+// Paste text (and attach files) into pane i and click send. Waits until that AI is idle first.
+async function sendOnly(i, text, files = []) {
+  const p = panes[i]; const a = adapterFor(p);
+  if (!a) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
+  const limit = Date.now() + (settings.timeoutMin || 60) * 60000;
+  for (;;) {
+    const r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
+    if (!r.busy) break;
+    if (Date.now() > limit) throw new Error(`${p.label} was still busy, so nothing was sent.`);
+    setPhase(`Waiting for ${p.label} to finish before sending`);
+    await sleep(1500);
+  }
+  setPhase(`Sending to ${p.label}`);
+  for (const f of files) {
+    const r = await run(p, pgAttach, f.name, f.content, mimeFor(f.name));
+    if (!r.ok) throw new Error(`${p.label}: couldn't attach ${f.name} (${r.error})`);
+    await sleep(2500);
+  }
+  R.lastSent[i] = norm(text).slice(0, 60);
+  return typeAndSend(p, text, files.length ? 40 : 5);
+}
+
+// Compact delivery status under Start/Stop
+function deliveryText() {
+  const fl = inflight();
+  const held = R.held.length ? ` · ${R.held.length} held` : '';
+  if (R.blocker) return { cls: 'blocked', text: `Blocked: ${R.blocker}${held}` };
+  if (fl) {
+    const what = `${label(fl.from)} R${fl.num || '?'} → ${label(fl.to)}`;
+    const st = fl.state === 'queued' ? 'sending…' : fl.state === 'uncertain' ? 'checking whether it arrived…' : `delivered ${fmtTime(fl.awaitingAt)} · waiting for reply`;
+    return { cls: 'live', text: `${what} · ${st}${held}` };
+  }
+  const last = [...R.ledger].reverse().find((x) => x.state === 'completed' || x.state === 'awaiting');
+  if (last) return { cls: '', text: `Last: ${label(last.from)} R${last.num || '?'} → ${label(last.to)} · delivered ${fmtTime(last.awaitingAt)}${last.completedAt ? ` · reply received ${fmtTime(last.completedAt)}` : ''}${held}` };
+  return { cls: '', text: R.held.length ? `${R.held.length} message(s) held` : 'Nothing delivered yet in this session.' };
+}
+function refreshDelivery() {
+  const el = $('#deliveryLine');
+  if (!el) return;
+  const d = deliveryText();
+  el.textContent = d.text;
+  el.className = 'delivery-line ' + d.cls;
+  pushStatus();
 }
 
 // "Safe to type" vs "Busy" + the live STATUS.md in Drive
-const isBusy = () => R.busy || working[0] || working[1];
+const isBusy = () => R.busy || working[0] || working[1] || (!!inflight() && inflight().state !== 'awaiting');
 function refreshBusy() {
   const el = $('#busyLine');
   if (!el) return;
@@ -730,82 +1022,12 @@ function pushStatus() {
       turn: R.on ? `${R.turn} of ${maxTurns()}` : '-',
       questions: openQ.map((q) => `Q${q.id} (${q.ai}): ${short(q.text, 140)}`).join(' | '),
       summary: short(summaryText, 400),
+      delivery: deliveryText().text,
       last: lastNote ? `${short(lastNote.text, 120)} (${new Date().toLocaleTimeString()})` : ''
     });
   }, 1500);
 }
 
-// Copy one finished reply from pane i to the other pane
-async function relayFrom(i, text, opts = {}) {
-  R.busy = true;
-  updateControls();
-  try {
-    const parsed = parseTurn(text);
-    // Replies without the markers are passed through as they are
-    const p = parsed || { name: aiName(i), num: '', payload: text.trim(), files: [], response: text, requests: '', userRequest: '', complete: false, hasEnd: false };
-    addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: p.num });
-    if (p.files && p.files.length) await saveReplyFiles(i, p);
-    R.lastFrom = i;
-    R.complete[i] = !!p.complete;
-    const qBefore = questions.length;
-    if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
-    if (!opts.force) {
-      if (R.complete[0] && R.complete[1]) { setRelay(false, 'Both AIs wrote SESSION COMPLETE. Relay off.'); summarizeSoon(); return; }
-      if (R.turn >= maxTurns()) { setRelay(false, `Reached ${maxTurns()} turns. Relay off. Turn it on to keep going.`); summarizeSoon(); return; }
-      if ($('#pauseOnQ').checked && questions.length > qBefore) { setRelay(false, 'Relay off so you can answer the question. Turn it on when ready.'); return; }
-    }
-    const to = 1 - i;
-    const hop = hopContent(p);
-    let out = hop.text;
-    if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(i)}'s latest reply.\n\n` + out;
-    const answers = R.queued[to].splice(0);
-    if (answers.length) out += '\n\nUSER RESPONSE\n' + answers.join('\n\n');
-    await sendOnly(to, out, hop.files);
-    R.introduced[to] = true;
-    R.turn++;
-    hopsSinceSummary++;
-    if (hopsSinceSummary >= 2 || !summaryText) summarizeSoon();
-    note(`Passed ${label(i)} → ${label(to)}${answers.length ? ' + your answer' : ''}${hop.files.length ? ` + ${hop.files.length} file${hop.files.length > 1 ? 's' : ''}` : ''}.`);
-  } catch (e) {
-    note('Error: ' + e.message, true);
-    if (R.on) setRelay(false, 'Relay off because of the error above. Fix it and turn the relay back on.');
-  } finally {
-    R.busy = false;
-    updateControls();
-    autosave();
-  }
-}
-
-// Paste text (and attach files) into pane i and send it. Doesn't wait for the reply: the watcher catches it.
-async function sendOnly(i, text, files = []) {
-  const p = panes[i]; const a = adapterFor(p);
-  if (!a) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
-  // don't interrupt an AI that's still working
-  const limit = Date.now() + (settings.timeoutMin || 60) * 60000;
-  for (;;) {
-    const r = await run(p, pgRead, a.reply, a.busy || '');
-    if (!r.busy) break;
-    if (Date.now() > limit) throw new Error(`${p.label} was still busy, so nothing was sent.`);
-    setPhase(`Waiting for ${p.label} to finish before sending`);
-    await sleep(1500);
-  }
-  setPhase(`Sending to ${p.label}`);
-  for (const f of files) {
-    const r = await run(p, pgAttach, f.name, f.content, mimeFor(f.name));
-    if (!r.ok) throw new Error(`${p.label}: couldn't attach ${f.name} (${r.error})`);
-    await sleep(2500);
-  }
-  R.lastSent[i] = norm(text).slice(0, 60);
-  await typeAndSend(p, text, files.length ? 40 : 5);
-}
-
-// Called when a pane moves to a different chat: start fresh there
-function paneChatChanged(i) {
-  R.rebase[i] = true;
-  R.introduced[i] = false;
-  stab[i] = null;
-  autosave();
-}
 
 // ---------- Questions ----------
 function similarText(a, b) {
@@ -919,8 +1141,12 @@ const MOD_TOOLS = [
     description: 'Turn the relay on (replies from either AI get copied to the other) or off.',
     input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['on', 'off'] } }, required: ['action'] } },
   { name: 'relay_latest',
-    description: "Pick up a conversation: copy the latest reply currently in one pane over to the other AI right now (with the relay rules if that AI hasn't had them). Use when Justin wants to restart or nudge things, e.g. 'send Claude's last reply to ChatGPT'. Checks first that the source AI has finished working.",
-    input_schema: { type: 'object', properties: { from_pane: { type: 'integer', enum: [1, 2] } }, required: ['from_pane'] } },
+    description: "Pick up a conversation: copy the latest reply currently in one pane over to the other AI right now (with the relay rules if that AI hasn't had them). Refuses if that exact message was already delivered, unless allow_repeat is true (only when Justin explicitly asks to resend). Checks first that the source AI has finished working.",
+    input_schema: { type: 'object', properties: { from_pane: { type: 'integer', enum: [1, 2] }, allow_repeat: { type: 'boolean' }, cancel_pending: { type: 'boolean' } }, required: ['from_pane'] } },
+  { name: 'delivery_status', description: 'The delivery ledger: what is in flight (queued, uncertain, awaiting a reply), held messages, and the last few deliveries with times. Use when Justin asks what was delivered, or when the relay is blocked.',
+    input_schema: { type: 'object', properties: {} } },
+  { name: 'resolve_delivery', description: "Resolve a blocked or uncertain delivery, or a held message. mark_arrived (Justin confirms the destination got it), resend (only if it really didn't arrive; needs his OK), cancel (drop the in-flight delivery), send_held / drop_held (index from delivery_status).",
+    input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['mark_arrived', 'resend', 'cancel', 'send_held', 'drop_held'] }, index: { type: 'integer' } }, required: ['action'] } },
   { name: 'check_panes', description: "Check whether each AI is idle or still working (stop button, streaming, text still changing), and whether its latest reply ends with END OF TURN. Use before acting, and when Justin asks if something is stuck.",
     input_schema: { type: 'object', properties: {} } },
   { name: 'read_pane', description: 'Read the latest reply currently shown in a pane.',
@@ -941,8 +1167,8 @@ async function paneState(i) {
   const r1 = await run(p, pgRead, a.reply, a.busy || '');
   await sleep(2000);
   const r2 = await run(p, pgRead, a.reply, a.busy || '');
-  const changing = r1.text !== r2.text || r1.count !== r2.count;
-  return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_relayed: norm(r2.text) === R.seen[i] };
+  const changing = msgKey(r1.text) !== msgKey(r2.text) || r1.count !== r2.count;
+  return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_handled: knownHas(i, msgKey(r2.text)) };
 }
 function modSystem() {
   const openQ = questions.filter((q) => !q.answered);
@@ -955,7 +1181,9 @@ How it works: the relay is one switch. When it's ON, every finished reply from e
 Your job: Justin messages you here, usually on the go. Keep replies short and plain.
 - Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
 - Answers ride along with the next message each AI receives. If the relay is OFF and Justin wants things moving again, turn it on; if nothing new is coming (both AIs are waiting), use relay_latest to send the last reply across so his answer goes out with it.
-- To pick up a conversation, use relay_latest from the side that spoke last.
+- To pick up a conversation, use relay_latest from the side that spoke last. It refuses messages that were already delivered: never force a repeat unless Justin explicitly asks.
+- If the relay is blocked, explain the blocker in one or two plain sentences and ask Justin which single message should go next. Use delivery_status and resolve_delivery. Never replay a pile of held or duplicate messages.
+- Replies to your own side messages (send_to_pane) are not forwarded automatically.
 - Before sending anything or saying an AI is done, call check_panes. Never send to an AI that is still working, even if it already wrote END OF TURN.
 - Anything you send to the AIs (answers, your own messages, edits, a new task) shows Justin an approval card with the exact text, and nothing goes out until he clicks Send (he may edit it first). Just call the tool; don't ask for permission in text first. If he declines, ask what he'd like instead.
 - Turn the relay on or off when he asks.
@@ -963,6 +1191,8 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - Push back when the two AIs loop, drift off task, or miss something, and tell him.
 
 Relay: ${relayStatus()}
+Delivery: ${deliveryText().text}
+Held messages: ${R.held.length ? R.held.map((h, k) => `#${k + 1} ${label(h.from)} RESPONSE ${h.num || '?'} (${h.why})`).join('; ') : 'none'}
 Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'}
 Goal: ${R.task || '(none set)'}
 Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
@@ -1012,15 +1242,60 @@ async function runTool(name, x) {
       const from = (x.from_pane | 0) - 1;
       if (from !== 0 && from !== 1) return { error: 'from_pane must be 1 or 2' };
       if (R.busy) return { error: 'The relay is busy sending. Try again in a moment.' };
+      const fl = inflight();
+      if (fl && ACTIVE.includes(fl.state) && !x.cancel_pending) return { error: `${label(fl.from)} RESPONSE ${fl.num || '?'} → ${label(fl.to)} is still ${fl.state}. Wait for it, or call again with cancel_pending=true if Justin says so.` };
       const st = await paneState(from);
       if (st.working) return { error: `${label(from)} (${aiName(from)}) is still working. Wait until it's done.`, state: st };
       const text = await readLatest(from);
       if (!text) return { error: `${label(from)} has no reply on screen.` };
+      const key = msgKey(text);
+      const dup = R.ledger.find((y) => y.from === from && y.hash === key && y.state !== 'cancelled');
+      if (dup && !x.allow_repeat) return { error: `That exact message was already delivered to ${label(dup.to)} at ${fmtTime(dup.awaitingAt || dup.queuedAt)} (${dup.state}). Only resend if Justin explicitly wants it again (allow_repeat=true).` };
       const ok = await askApproval(`Send ${label(from)}'s latest reply → ${label(1 - from)} (${aiName(1 - from)})`, text);
       if (!ok.ok) return DECLINED;
-      R.seen[from] = norm(text);
-      await relayFrom(from, ok.text, { force: true });
-      return { sent: true, to: label(1 - from) };
+      if (fl && ACTIVE.includes(fl.state)) { await setState(fl, 'cancelled'); R.inflight = null; }
+      knownAdd(from, key);
+      R.blocker = '';
+      await route(from, ok.text, msgKey(ok.text), { force: true, allowRepeat: !!x.allow_repeat });
+      return { sent: true, to: label(1 - from), delivery: deliveryText().text };
+    }
+    case 'delivery_status':
+      return {
+        status: deliveryText().text,
+        in_flight: inflight() ? (({ from, to, num, state, attempts, queuedAt, awaitingAt }) => ({ from: label(from), to: label(to), response: num, state, attempts, queuedAt, awaitingAt }))(inflight()) : null,
+        held: R.held.map((h, k) => ({ index: k + 1, from: label(h.from), response: h.num, why: h.why, at: h.at })),
+        recent: R.ledger.slice(-8).map((y) => ({ from: label(y.from), to: label(y.to), response: y.num, state: y.state, delivered: y.awaitingAt || null, replied: y.completedAt || null }))
+      };
+    case 'resolve_delivery': {
+      const fl = inflight();
+      if (x.action === 'send_held') {
+        const h = R.held[(x.index | 0) - 1];
+        if (!h) return { error: 'No held message with that index.' };
+        if (fl && ACTIVE.includes(fl.state)) return { error: `Something is still ${fl.state}: ${label(fl.from)} RESPONSE ${fl.num || '?'} → ${label(fl.to)}. Resolve that first.` };
+        const ok = await askApproval(`Send held ${label(h.from)} RESPONSE ${h.num || '?'} → ${label(1 - h.from)} (${aiName(1 - h.from)})`, h.text);
+        if (!ok.ok) return DECLINED;
+        R.held = R.held.filter((y) => y !== h);
+        R.blocker = '';
+        await route(h.from, ok.text, msgKey(ok.text), { force: true, allowRepeat: true });
+        return { sent: true, delivery: deliveryText().text };
+      }
+      if (x.action === 'drop_held') {
+        const h = R.held[(x.index | 0) - 1];
+        if (!h) return { error: 'No held message with that index.' };
+        R.held = R.held.filter((y) => y !== h); refreshDelivery(); saveNow();
+        return { dropped: true };
+      }
+      if (!fl) return { error: 'Nothing is in flight.' };
+      if (x.action === 'mark_arrived') { await markSubmitted(fl); R.blocker = ''; refreshDelivery(); return { ok: true, delivery: deliveryText().text }; }
+      if (x.action === 'resend') {
+        const ok = await askApproval(`Resend ${label(fl.from)} RESPONSE ${fl.num || '?'} → ${label(fl.to)} (only if it really didn't arrive)`, fl.out || '(text not available)');
+        if (!ok.ok || !fl.out) return ok.ok ? { error: 'The text of that message is no longer available. Use relay_latest instead.' } : DECLINED;
+        R.blocker = ''; fl.out = ok.text;
+        await submit(fl);
+        return { ok: true, delivery: deliveryText().text };
+      }
+      if (x.action === 'cancel') { await setState(fl, 'cancelled'); R.inflight = null; R.blocker = ''; refreshDelivery(); return { cancelled: true }; }
+      return { error: 'Unknown action' };
     }
     case 'read_pane': {
       const p = P(x.pane); const a = adapterFor(p);
@@ -1033,8 +1308,9 @@ async function runTool(name, x) {
       const ok = await askApproval(`Message → ${p.label} (${aiName(p.i)})`, x.text);
       if (!ok.ok) return DECLINED;
       addLog({ who: 'Moderator', to: p.label, text: ok.text, kind: 'moderator' });
+      R.sideChat[p.i] = true; // its answer is a side conversation: not forwarded unless asked
       await sendOnly(p.i, ok.text);
-      return { sent: true, note: R.on ? 'Its reply will be relayed like any other.' : 'The relay is off, so its reply stays in that chat.' };
+      return { sent: true, note: 'Its reply is treated as a side conversation and is not forwarded unless Justin asks (relay_latest).' };
     }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
@@ -1129,13 +1405,24 @@ function sanitizeHistory(h) {
     if (last && last.role === m.role) last.content = [...asArr(last.content), ...asArr(m.content)];
     else merged.push({ role: m.role, content: m.content });
   }
-  while (merged.length && merged[0].role !== 'user') merged.shift();
+  // The window may start mid-exchange: drop leading assistant turns and tool results whose request was cut off
+  for (;;) {
+    if (!merged.length) break;
+    const m = merged[0];
+    if (m.role !== 'user') { merged.shift(); continue; }
+    if (Array.isArray(m.content) && m.content.some((c) => c.type === 'tool_result')) {
+      const rest = m.content.filter((c) => c.type !== 'tool_result');
+      if (rest.length) { merged[0] = { role: 'user', content: rest }; break; }
+      merged.shift(); continue;
+    }
+    break;
+  }
   return merged;
 }
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
+const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
 async function moderatorSend(text) {
   if (modBusy || !text.trim()) return;
   if (!settings.apiKey) { modMsg('err', 'Add an Anthropic API key in ⚙ Settings to use the moderator.'); return; }
@@ -1229,6 +1516,7 @@ function newSession() {
   logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
   R.turn = 0; R.task = ''; R.queued = [[], []]; R.lastFrom = null; R.introduced = [false, false];
   R.seen = ['', '']; R.rebase = [true, true];
+  R.ledger = []; R.inflight = null; R.known = [[], []]; R.held = []; R.blocker = '';
   updateControls();
   refreshSessionList();
   renderSummary();
@@ -1255,6 +1543,8 @@ async function debugReport() {
   }
   const drv = await window.api.driveInfo();
   lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'} · sessions saved ${drv.found ? 'in Drive (Journey Relay/_sessions)' : 'on this computer only'} · computer: ${myHost}`);
+  lines.push(`Delivery: ${deliveryText().text}`);
+  lines.push('Recent deliveries: ' + (R.ledger.slice(-6).map((y) => `${label(y.from)} R${y.num || '?'}→${label(y.to)} ${y.state}${y.attempts > 1 ? ` (${y.attempts} tries)` : ''}`).join(' | ') || 'none'));
   lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);
   lines.push(`Relay: ${relayStatus()}
 Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'} · task: ${short(R.task, 120) || '(none)'}`);
@@ -1302,6 +1592,7 @@ function snapshot() {
   return {
     id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '', name: session.name || '',
     title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued, seen: R.seen,
+    ledger: R.ledger, inflight: R.inflight, known: R.known, held: R.held, blocker: R.blocker,
     questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
     logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
   };
@@ -1340,7 +1631,11 @@ function applySession(j, loadUrls) {
   session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '', name: j.name || '' };
   R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
   R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
-  R.seen = j.seen || ['', '']; R.rebase = [!R.seen[0], !R.seen[1]];
+  R.seen = j.seen || ['', ''];
+  R.ledger = j.ledger || []; R.inflight = j.inflight || null; R.known = j.known || [[], []]; R.held = j.held || []; R.blocker = j.blocker || '';
+  R.rebase = [!R.known[0].length, !R.known[1].length]; // older sessions: start from what's on screen, never replay
+  const fl0 = inflight();
+  if (fl0 && fl0.state === 'queued') fl0.state = 'uncertain'; // stopped mid-delivery: check before resending
   questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
   logEntries.length = 0; (j.logEntries || []).forEach((e) => logEntries.push({ ...e, time: new Date(e.time) }));
   summaryText = j.summaryText || ''; renderSummary();
@@ -1353,6 +1648,7 @@ function applySession(j, loadUrls) {
   if (loadUrls) (j.urls || []).forEach((u, i) => { if (u && /^https?:/.test(u) && u !== curUrl(panes[i])) { try { panes[i].wv.loadURL(u); } catch {} } });
   restoring = false;
   updateControls();
+  refreshDelivery();
   updateSessionName();
   if (!summaryText && logEntries.some((e) => e.kind === 'reply')) summarizeSoon();
 }
@@ -1443,7 +1739,8 @@ async function init() {
   myHost = await window.api.host();
   window.api.driveInfo().then((d) => { if (!d.found) note('Google Drive for desktop wasn\'t found, so shared files will save to Documents/Journey Relay. Install Drive for desktop to save them to Drive.', true); });
   updateControls();
-  if (settings.auto !== false) setTimeout(() => setRelay(true, 'Relay on. Replies from either AI are copied to the other.'), 1500);
+  if (settings.auto !== false && !R.blocker && !R.held.length) setTimeout(() => setRelay(true, 'Relay on. Replies from either AI are copied to the other.'), 1500);
+  else if (R.blocker || R.held.length) note(`Relay left off: ${R.blocker || `${R.held.length} held message(s) waiting for your decision`}. Ask the moderator what's pending.`, true);
   checkUpdate(true);
   setInterval(() => checkUpdate(true), 30 * 60 * 1000);
 }

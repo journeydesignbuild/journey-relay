@@ -1,7 +1,7 @@
 {
   "name": "journey-relay",
   "productName": "Journey Relay",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Split-view browser that relays a conversation between two AI chat sites, with a Claude moderator",
   "main": "main.js",
   "scripts": {

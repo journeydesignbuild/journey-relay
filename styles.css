@@ -173,3 +173,7 @@ dialog h3 { margin: 0; }
 .sumcard .row.tight { flex-wrap: wrap; justify-content: flex-end; }
 .sumcard .row.head { flex-wrap: wrap; row-gap: 6px; }
 .sumcard .row.head > strong { white-space: nowrap; }
+
+.delivery-line { margin-top: -4px; padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #C9CED6; background: #15181D; border: 1px solid #262A31; }
+.delivery-line.live { border-color: #5A3A20; color: #F6D5B8; }
+.delivery-line.blocked { background: #2A1717; border-color: #7A3434; color: #F2A0A0; font-weight: 700; }

@@ -143,7 +143,7 @@ function createWindow(fresh = false) {
   win.loadFile('index.html', fresh ? { query: { fresh: '1' } } : undefined);
   if (process.env.JP_SELFTEST && firstWindow) {
     win.webContents.on('console-message', (_e, _l, m) => { if (String(m).startsWith('[dbg]')) console.log(m); });
-    require(path.join(__dirname, 'test', 'selftest.js'))(win, app);
+    require(path.join(__dirname, 'test', process.env.JP_SELFTEST === 'acceptance' ? 'acceptance.js' : 'selftest.js'))(win, app);
   }
   firstWindow = false;
   return win;
@@ -381,6 +381,7 @@ function writeStatusFile() {
       `- Turn: ${x.turn}`,
       `- Open questions for Justin: ${x.questions || 'none'}`,
       `- Where we are: ${x.summary || '(no summary yet)'}`,
+      `- Delivery: ${x.delivery || '-'}`,
       `- Last activity: ${x.last || '-'}`, '');
   });
   try {

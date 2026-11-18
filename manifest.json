@@ -1,6 +1,6 @@
 {
-  "version": "1.7.0",
-  "notes": "Sessions save to Google Drive so another computer can pick them up; Safe to type / Busy indicator; live STATUS.md in Drive.",
+  "version": "1.8.0",
+  "notes": "Fix duplicate relays: messages get a durable identity (site timestamps ignored), deliveries are tracked and checked before any resend, repeat loops pause with an explanation, side conversations are not forwarded. Also fixes a moderator history error.",
   "files": [
     "main.js",
     "preload.js",

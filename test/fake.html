@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>fake chat</title>
+<style>.msg{white-space:pre-wrap;margin:6px;padding:6px;border:1px solid #ccc;font:12px monospace}</style>
+</head>
+<body>
+<div id="thread"></div>
+<textarea id="box" rows="3" cols="60"></textarea>
+<button id="send">Send</button>
+<button id="stop" aria-label="Stop" style="display:none">Stop</button>
+<input type="file" id="up" multiple>
+<script>
+// Port 8001 = ALPHA (ChatGPT-like: messages carry data-message-id)
+// Port 8002 = BETA  (Claude-like: no message ids, and a "N minutes ago" footer that keeps changing)
+const NAME = location.port === '8001' ? 'ALPHA' : 'BETA';
+const OTHER = NAME === 'ALPHA' ? 'BETA' : 'ALPHA';
+window.cfg = { auto: false, lag: 0, slow: false, footer: NAME === 'BETA', completeAt: 999 };
+window.received = []; window.files = [];
+let n = 0, seq = 0;
+const box = document.getElementById('box'), thread = document.getElementById('thread'), stop = document.getElementById('stop');
+document.getElementById('up').addEventListener('change', async (e) => { for (const f of e.target.files) window.files.push({ name: f.name, text: await f.text() }); });
+function addUser(t) { const u = document.createElement('div'); u.className = 'msg user'; u.textContent = t; thread.appendChild(u); }
+function send() {
+  const t = box.value; if (!t.trim()) return;
+  window.received.push(t);
+  if (cfg.lag) setTimeout(() => { box.value = ''; addUser(t); }, cfg.lag);
+  else { box.value = ''; addUser(t); }
+  if (cfg.auto) setTimeout(() => reply(t), 600 + cfg.lag);
+}
+window.protocol = (num, body, opts = {}) =>
+  `${NAME} RESPONSE ${num} START\n${body}\n${NAME} RESPONSE ${num} END\n\n${NAME} REQUESTS ${OTHER}\n${opts.request || 'Please review.'}\n\nUSER REQUEST\n${opts.question || 'NONE'}\n\n${opts.complete ? 'SESSION COMPLETE\n' : ''}END OF TURN`;
+function reply(t) {
+  if (t.startsWith('SIDE:')) return post('Side answer: 4. (no relay markers here)');
+  n++;
+  post(protocol(String(n).padStart(3, '0'), `Work item ${n} from ${NAME}`, { complete: n >= cfg.completeAt }));
+}
+// Post a bot message, streaming it in. slow = small chunks with a long pause in the middle (Stop button stays visible).
+function post(text) {
+  const b = document.createElement('div'); b.className = 'msg bot';
+  if (NAME === 'ALPHA') b.setAttribute('data-message-id', 'm' + (++seq));
+  const body = document.createElement('div'); body.className = 'body'; b.appendChild(body);
+  if (cfg.footer) { const f = document.createElement('div'); f.className = 'foot'; b.appendChild(f); }
+  b._born = Date.now();
+  thread.appendChild(b);
+  stop.style.display = '';
+  const chunk = cfg.slow ? 8 : 60, delay = cfg.slow ? 250 : 60;
+  let i = 0, paused = false;
+  const step = () => {
+    i += chunk; body.textContent = text.slice(0, i);
+    if (cfg.slow && !paused && i > text.length / 2) { paused = true; setTimeout(step, 5000); return; }
+    if (i >= text.length) { body.textContent = text; stop.style.display = 'none'; return; }
+    setTimeout(step, delay);
+  };
+  step();
+}
+window.post = post;
+window.reviseLast = (text) => { const bs = document.querySelectorAll('.bot'); bs[bs.length - 1].querySelector('.body').textContent = text; };
+// Claude-style relative timestamp + icon glyph, ticking fast (1 "minute" per second)
+setInterval(() => document.querySelectorAll('.bot .foot').forEach((f) => { f.textContent = '\n' + (27 + Math.floor((Date.now() - f.parentElement._born) / 1000)) + ' minutes ago'; }), 1000);
+document.getElementById('send').onclick = send;
+box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+</script>
+</body>
+</html>

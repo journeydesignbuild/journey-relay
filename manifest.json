@@ -1,6 +1,6 @@
 {
-  "version": "1.5.3",
-  "notes": "Handles Claude replies that run tools before answering; Teach skips auto-generated ids; updated ChatGPT/Claude setups.",
+  "version": "1.5.4",
+  "notes": "Approval cards shrink to one line after you decide.",
   "files": [
     "main.js",
     "preload.js",

@@ -133,3 +133,10 @@ dialog h3 { margin: 0; }
 .m.approve.ok .ap-title { color: #8FD19E; }
 .m.approve.no { border-color: #2E333B; background: #1C2026; opacity: .7; }
 .m.approve.no .ap-title { color: #9AA1AB; }
+
+.m.approve.ok, .m.approve.no { padding: 4px 10px; }
+.m.approve details summary { cursor: pointer; list-style: none; }
+.m.approve details summary::-webkit-details-marker { display: none; }
+.m.approve details summary::before { content: '▸ '; }
+.m.approve details[open] summary::before { content: '▾ '; }
+.m.approve .ap-body { white-space: pre-wrap; margin-top: 6px; max-height: 260px; overflow-y: auto; color: #C9CED6; }

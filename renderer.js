@@ -1024,8 +1024,10 @@ function askApproval(title, text) {
     box.scrollTop = 1e9;
     const done = (ok) => {
       const finalText = ta.value;
-      d.querySelectorAll('button, textarea').forEach((el) => (el.disabled = true));
+      // collapse to a one-line record; click it to see the text
+      d.innerHTML = '<details><summary class="ap-title"></summary><div class="ap-body"></div></details>';
       $('.ap-title', d).textContent = `${ok ? 'Sent' : 'Not sent'} · ${title}`;
+      $('.ap-body', d).textContent = finalText;
       d.classList.add(ok ? 'ok' : 'no');
       chatLog.push({ kind: 'tool', text: `${ok ? 'Approved' : 'Declined'}: ${title} — ${short(finalText, 200)}` });
       autosave();

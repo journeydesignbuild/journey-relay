@@ -1469,6 +1469,14 @@ function openSettings() {
   $('#sFramework').value = settings.framework;
   $('#sAdapters').value = JSON.stringify(settings.adapters, null, 2);
   $('#sRepo').value = settings.updateRepo || '';
+  window.api.driveList().then(async (roots) => {
+    const cur = (await window.api.driveInfo()).root || '';
+    const sel = $('#sDrive');
+    sel.innerHTML = (roots.length ? '' : '<option value="">Google Drive for desktop not found</option>') +
+      roots.map((r) => `<option value="${esc(r.path)}">${esc(r.path)}  (${esc(r.sample.join(', ') || 'empty')}…)</option>`).join('');
+    sel.value = settings.driveFolder || cur;
+    sel.dataset.was = cur;
+  });
   $('#sToken').value = settings.githubToken || '';
   $('#settingsErr').textContent = '';
   setPanesVisible(false);
@@ -1478,7 +1486,13 @@ async function submitSettings(e) {
   e.preventDefault();
   let adapters;
   try { adapters = JSON.parse($('#sAdapters').value || '{}'); } catch { $('#settingsErr').textContent = 'Taught sites is not valid JSON.'; return; }
+  const newDrive = $('#sDrive').value, oldDrive = $('#sDrive').dataset.was || '';
+  if (newDrive && newDrive !== oldDrive) {
+    const mv = await window.api.driveMove({ from: oldDrive, to: newDrive });
+    note(mv.copied ? `Switched Google Drive to ${newDrive}. Your relay sessions and files were copied over.` : mv.error ? `Switched Google Drive to ${newDrive}, but copying old files failed: ${mv.error}` : `Switched Google Drive to ${newDrive}.`, !!mv.error);
+  }
   Object.assign(settings, {
+    driveFolder: newDrive || settings.driveFolder || '',
     apiKey: $('#sApiKey').value.trim(),
     modModel: $('#sModModel').value.trim() || settings.modModel,
     sumModel: $('#sSumModel').value.trim() || settings.sumModel,
@@ -1494,6 +1508,8 @@ async function submitSettings(e) {
   await saveSettings();
   panes.forEach(refreshPane);
   $('#settings').close();
+  if (session) saveNow(); // write the current session into the newly chosen Drive right away
+  refreshSessionList();
 }
 
 // ---------- Export / new session ----------

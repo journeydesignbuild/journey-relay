@@ -143,7 +143,8 @@ function createWindow(fresh = false) {
   win.loadFile('index.html', fresh ? { query: { fresh: '1' } } : undefined);
   if (process.env.JP_SELFTEST && firstWindow) {
     win.webContents.on('console-message', (_e, _l, m) => { if (String(m).startsWith('[dbg]')) console.log(m); });
-    require(path.join(__dirname, 'test', process.env.JP_SELFTEST === 'acceptance' ? 'acceptance.js' : 'selftest.js'))(win, app);
+    const t = path.join(__dirname, 'test', `${process.env.JP_SELFTEST}.js`);
+    require(fs.existsSync(t) ? t : path.join(__dirname, 'test', 'selftest.js'))(win, app);
   }
   firstWindow = false;
   return win;
@@ -304,6 +305,32 @@ function relayDir(folder) {
   return { dir: path.join(baseDir, cleanName(folder)), onDrive: !!root, root };
 }
 ipcMain.handle('drive:info', () => { const r = findDriveRoot(); return { found: !!r, root: r }; });
+// Every Google Drive for desktop "My Drive" on this computer (one per signed-in account)
+function allDriveRoots() {
+  const out = [];
+  if (process.platform === 'win32') for (const L of 'DEFGHIJKLMNOPQRSTUVWXYZ') out.push(`${L}:\\My Drive`);
+  const home = os.homedir();
+  if (process.platform === 'darwin') {
+    const cs = path.join(home, 'Library', 'CloudStorage');
+    try { fs.readdirSync(cs).filter((n) => n.startsWith('GoogleDrive-')).forEach((n) => out.push(path.join(cs, n, 'My Drive'))); } catch {}
+  }
+  out.push(path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'My Drive'));
+  return out.filter((p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } }).map((p) => {
+    let sample = [];
+    try { sample = fs.readdirSync(p).filter((n) => !n.startsWith('.')).slice(0, 4); } catch {}
+    return { path: p, sample };
+  });
+}
+ipcMain.handle('drive:list', () => allDriveRoots());
+// Switching accounts: copy the relay's sessions and files to the new Drive (never overwriting)
+ipcMain.handle('drive:move', (_e, { from, to }) => {
+  try {
+    const src = path.join(from, 'Journey Relay'), dst = path.join(to, 'Journey Relay');
+    if (!from || !to || from === to || !fs.existsSync(src)) return { copied: false };
+    fs.cpSync(src, dst, { recursive: true, force: false, errorOnExist: false });
+    return { copied: true };
+  } catch (err) { return { copied: false, error: String(err.message || err) }; }
+});
 ipcMain.handle('drive:save', (_e, { folder, name, content }) => {
   try {
     const { dir, onDrive } = relayDir(folder);

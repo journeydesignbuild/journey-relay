@@ -1,6 +1,6 @@
 {
-  "version": "1.8.0",
-  "notes": "Fix duplicate relays: messages get a durable identity (site timestamps ignored), deliveries are tracked and checked before any resend, repeat loops pause with an explanation, side conversations are not forwarded. Also fixes a moderator history error.",
+  "version": "1.8.1",
+  "notes": "Pick which Google Drive account the relay saves to (Settings). Switching copies your sessions and files over.",
   "files": [
     "main.js",
     "preload.js",

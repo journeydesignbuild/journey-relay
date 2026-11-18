@@ -160,7 +160,7 @@ function pgInputText(sel) {
   return /^(TEXTAREA|INPUT)$/.test(el.tagName) ? el.value : (el.innerText || '');
 }
 // What's still sitting in the input area: typed text and attachment chips (long pastes turn into chips on ChatGPT/Claude)
-function pgComposer(sel) {
+function pgComposer(sel, msgSel) {
   const vis = (e) => e.getClientRects().length > 0;
   let els;
   try { els = [...document.querySelectorAll(sel)].filter(vis); } catch (e) { return { text: '', chips: 0 }; }
@@ -168,11 +168,15 @@ function pgComposer(sel) {
   if (!el) return { text: '', chips: 0 };
   if (!/^(TEXTAREA|INPUT)$/.test(el.tagName) && !el.isContentEditable) { const inner = el.querySelector('textarea, [contenteditable="true"]'); if (inner) el = inner; }
   const text = /^(TEXTAREA|INPUT)$/.test(el.tagName) ? el.value : (el.innerText || '');
-  let region = el.closest('form');
-  if (!region) { region = el; for (let d = 0; d < 5 && region.parentElement; d++) region = region.parentElement; }
+  const MSG = '[data-message-author-role], [data-message-id], [data-testid="user-message"], [data-testid*="conversation-turn"], .font-claude-message, .font-claude-response, .user, .bot' + (msgSel ? ', ' + msgSel : '');
+  const hasMsg = (n) => { try { return !!n.querySelector(MSG); } catch (e) { return !!n.querySelector('[data-message-author-role], .user, .bot'); } };
+  // Climb from the input box, but stop before reaching anything that holds chat messages (old attachments live there)
+  let region = el;
+  for (let d = 0; d < 6 && region.parentElement && !hasMsg(region.parentElement); d++) region = region.parentElement;
+  const f = el.closest('form'); if (f && !hasMsg(f) && f.contains(region) === false) region = f;
   const chipSel = '[data-testid*="attachment" i], [data-testid*="file-tile" i], [data-testid*="pasted" i], button[aria-label*="Remove file" i], button[aria-label*="Remove attachment" i], button[aria-label*="Remove pasted" i]';
   let chips = 0;
-  try { chips = [...region.querySelectorAll(chipSel)].filter(vis).filter((c) => !c.closest('[data-message-id], .user, .bot')).length; } catch (e) {}
+  try { chips = [...region.querySelectorAll(chipSel)].filter(vis).filter((c) => !c.closest(MSG)).length; } catch (e) {}
   if (!chips && /Show in text field|Pasted (text|content)/i.test(region.innerText || '')) chips = 1;
   return { text: text.trim(), chips };
 }
@@ -534,12 +538,26 @@ async function typeAndSend(p, text, sendTries = 5) {
   if (!r.ok) throw new Error(`${p.label}: couldn't paste into the input box`);
   await sleep(600);
   let clicked = false;
-  const comp = await run(p, pgComposer, a.input);
+  const comp = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
   if (comp && comp.chips) { sendTries = Math.max(sendTries, 40); setPhase(`${p.label} turned the long text into an attachment; waiting for it to load before sending`); }
   if (a.send) for (let k = 0; k < sendTries && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(500); }
   if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
+  await sleep(1200);
+  const left = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
+  if (left && left.chips) await pushSend(p);
   if (document.hasFocus() && document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you (only in the window you're using)
   return { clicked };
+}
+// Press send for content that is still sitting in the box: taught button, then Enter, then the site's built-in send button
+async function pushSend(p) {
+  const a = adapterFor(p); const pr = presetFor(hostOf(curUrl(p)));
+  const still = async () => { const c = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', ')); return c && (c.chips || c.text); };
+  if (a.send && await run(p, pgClickSend, a.send)) { await sleep(1200); if (!(await still())) return true; }
+  await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); await sleep(1200);
+  if (!(await still())) return true;
+  const fallback = [pr && pr.send, 'button[data-testid="send-button"], button[aria-label="Send message" i], button[aria-label="Send" i], button[type="submit"]'].filter(Boolean).join(', ');
+  if (await run(p, pgClickSend, fallback)) { await sleep(1200); if (!(await still())) return true; }
+  return false;
 }
 // Press send again only when the text is still sitting in the box (so it can't be a double submit)
 async function pressSendAgain(p) {
@@ -962,9 +980,9 @@ async function verifySubmitted(e) {
   let stuck = false;
   for (let k = 0; k < 40; k++) {
     await sleep(750);
-    const c = await run(p, pgComposer, a.input);
-    stuck = !!(c && (c.chips || (c.text && e.out && norm(e.out).startsWith(norm(c.text).slice(0, 40)))));
-    if (stuck) { if (k % 4 === 3 && a.send) await run(p, pgClickSend, a.send); continue; } // still in the box: not sent yet
+    const c = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
+    stuck = !!(c && c.chips);
+    if (stuck) { if (k % 4 === 3) await pushSend(p); continue; } // attachment still in the box: not sent yet
     if (k >= 8) break;
     const r = await readPane(e.to);
     if (!r) continue;
@@ -990,9 +1008,9 @@ async function reconcile(e, r) {
   if (!a) return;
   if (!r) { try { r = await readPane(e.to); } catch { return; } }
   if (!r) return;
-  const comp = await run(p, pgComposer, a.input);
+  const comp = await run(p, pgComposer, a.input, [a.reply, a.user].filter(Boolean).join(', '));
   if (comp && comp.chips && !r.busy) {
-    if (a.send) await run(p, pgClickSend, a.send);
+    await pushSend(p);
     if ((await verifySubmitted(e)) === 'yes') { await markSubmitted(e); return; }
     block(`${label(e.from)} RESPONSE ${e.num || '?'} is still sitting in ${label(e.to)}'s input box as an attachment and wasn't sent. Press send in ${label(e.to)}, then tell the moderator "it arrived". Or remove it and say "resend".`);
     return;

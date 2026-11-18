@@ -1,6 +1,6 @@
 {
-  "version": "1.11.1",
-  "notes": "Long messages that turn into attachments are checked before counting as sent; the moderator can read what was sent. Other relay windows no longer steal your typing. Fixed ChatGPT replies reading as empty.",
+  "version": "1.11.2",
+  "notes": "When a long message is stuck as an attachment, the relay now presses send again (Enter, then the site's own send button) before asking you. Stuck check ignores attachments in older messages.",
   "files": [
     "main.js",
     "preload.js",

@@ -5,8 +5,8 @@
 </head>
 <body>
 <div id="thread"></div>
-<textarea id="box" rows="3" cols="60"></textarea>
-<button id="send">Send</button>
+<div id="composer"><textarea id="box" rows="3" cols="60"></textarea>
+<button id="send">Send</button></div>
 <button id="stop" aria-label="Stop" style="display:none">Stop</button>
 <input type="file" id="up" multiple>
 <script>
@@ -73,6 +73,7 @@ window.reviseLast = (text) => { const bs = document.querySelectorAll('.bot'); bs
 setInterval(() => document.querySelectorAll('.bot .foot').forEach((f) => { f.textContent = '\n' + (27 + Math.floor((Date.now() - f.parentElement._born) / 1000)) + ' minutes ago'; }), 1000);
 document.getElementById('send').onclick = send;
 box.addEventListener('input', () => { if (cfg.chipOver && box.value.length > cfg.chipOver) makeChip(box.value); });
+window.oldChip = () => { const u = document.createElement('div'); u.className = 'msg user'; const c = document.createElement('div'); c.setAttribute('data-testid', 'attachment-chip'); c.textContent = 'Pasted text'; u.appendChild(c); thread.appendChild(u); };
 window.postEmpty = () => { const b = document.createElement('div'); b.className = 'msg bot'; thread.appendChild(b); };
 box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
 </script>

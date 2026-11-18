@@ -181,6 +181,11 @@ module.exports = (win, app) => {
       check('15. Stuck attachment: not marked arrived, blocker explains it', a15b === a15 && st15 === 'uncertain' && /still sitting/.test(bl15), `ALPHA ${a15}→${a15b}; state ${st15}; blocker "${(bl15 || '').slice(0, 70)}"`);
       await site(0, 'cfg.chipOver = 0; cfg.chipStuck = false; true');
 
+      // ---- 16. An attachment in an older message isn't mistaken for a stuck one ----
+      await site(0, 'if (chip) { chip.remove(); chip = null; } sendBtn().disabled = false; oldChip(); true');
+      const c16 = await js(`run(panes[0], pgComposer, '#box', '.bot, .user')`);
+      check('16. Old attachment in the chat is not counted as stuck in the input box', c16.chips === 0, JSON.stringify(c16));
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

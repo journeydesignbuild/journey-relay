@@ -116,6 +116,9 @@ module.exports = (win, app) => {
       console.log('sessions: ' + JSON.stringify(await js('window.api.listSessions()')));
       await js(`(async () => { const l = await window.api.listSessions(); R.task = ''; R.lastFrom = null; questions.length = 0; logEntries.length = 0; chatLog.length = 0; const j = await window.api.loadSession(l[0].id); applySession(j, false); return true; })()`);
       console.log('restored: ' + await js('R.task + " | lastFrom=" + R.lastFrom + " | log=" + logEntries.length + " | chat=" + chatLog.length + " | sel=" + $("#sessionSel").options.length'));
+      await js(`document.getElementById('renameBtn').click(); document.getElementById('renameInput').value = 'Concrete slogan test'; document.getElementById('renameSave').click(); true`);
+      await sleep(800);
+      console.log('renamed: ' + await js(`$('#sessionSel').selectedOptions[0].textContent + ' | ' + document.title`));
       console.log('=== CONTINUE TEST ===');
       console.log('buttons: ' + await js(`$('#startBtn').textContent + ' / cont hidden=' + $('#contBtn').classList.contains('hidden')`));
       await js(`runTool('answer_questions', { answer: 'Use 12.531 ft.', to: 'both' })`);

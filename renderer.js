@@ -1252,16 +1252,16 @@ function makeSessionId() {
 function startNewSession() { session = { id: makeSessionId(), created: new Date().toISOString() }; }
 function snapshot() {
   return {
-    id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '',
+    id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '', name: session.name || '',
     title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued,
     questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
     logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
   };
 }
-const sessionTitle = () => R.task || (chatLog.find((m) => m.kind === 'you') || {}).text || 'Untitled';
+const sessionTitle = () => (session && session.name) || R.task || (chatLog.find((m) => m.kind === 'you') || {}).text || 'Untitled';
 const hasActivity = () => !!R.task || logEntries.length > 0 || chatLog.some((m) => m.kind === 'you');
-function autosave() {
-  if (restoring || !hasActivity()) return;
+function autosave(force) {
+  if (restoring || (!force && !hasActivity())) return;
   if (!session) startNewSession();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => { await window.api.saveSession(snapshot()); refreshSessionList(); }, 700);
@@ -1281,7 +1281,7 @@ async function refreshSessionList() {
 }
 function applySession(j, loadUrls) {
   restoring = true;
-  session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '' };
+  session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '', name: j.name || '' };
   R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
   R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
   questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
@@ -1327,6 +1327,21 @@ async function init() {
   document.addEventListener('mousedown', (e) => { if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== menuBtn) setMenu(false); });
   window.__setMenu = setMenu;
   $('#newWinBtn').onclick = () => window.api.newWindow();
+  // Rename the current session
+  const showRename = (on) => { $('#renameRow').classList.toggle('hidden', !on); if (on) { $('#renameInput').value = session ? sessionTitle() : (R.task || ''); $('#renameInput').focus(); $('#renameInput').select(); } };
+  $('#renameBtn').onclick = () => showRename($('#renameRow').classList.contains('hidden'));
+  $('#renameCancel').onclick = () => showRename(false);
+  const doRename = async () => {
+    const name = $('#renameInput').value.trim();
+    if (!session) startNewSession();
+    session.name = name;
+    showRename(false);
+    clearTimeout(saveTimer);
+    await window.api.saveSession(snapshot());
+    refreshSessionList();
+  };
+  $('#renameSave').onclick = doRename;
+  $('#renameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doRename(); } if (e.key === 'Escape') { e.stopPropagation(); showRename(false); } });
   refreshSessionList();
   $('#startBtn').onclick = () => { window.__setMenu(false); runRelay($('#task').value, +$('#startFrom').value); };
   $('#contBtn').onclick = () => { window.__setMenu(false); runRelay('', 0, true); };

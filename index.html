@@ -76,9 +76,17 @@
           <button id="menuClose" class="icon" title="Close" aria-label="Close">✕</button>
         </span>
       </div>
-      <label class="field">Session
-        <select id="sessionSel"><option value="">New session</option></select>
-      </label>
+      <div class="field">Session
+        <div class="row tight">
+          <select id="sessionSel" aria-label="Session" style="flex:1;min-width:0"><option value="">New session</option></select>
+          <button id="renameBtn" class="icon" title="Rename this session" aria-label="Rename session">✎</button>
+        </div>
+        <div id="renameRow" class="row tight hidden">
+          <input id="renameInput" aria-label="Session name" placeholder="Session name" style="flex:1;min-width:0" />
+          <button id="renameSave" class="mini primary">Save</button>
+          <button id="renameCancel" class="mini">Cancel</button>
+        </div>
+      </div>
       <label class="field task-field">Task
         <textarea id="task" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
       </label>

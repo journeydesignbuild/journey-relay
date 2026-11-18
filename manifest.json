@@ -1,6 +1,6 @@
 {
-  "version": "1.5.1",
-  "notes": "Fix: moderator error about tool_use/tool_result after a restart or session switch.",
+  "version": "1.5.2",
+  "notes": "Rename sessions (\u270e next to the Session list).",
   "files": [
     "main.js",
     "preload.js",

@@ -579,6 +579,7 @@ function refreshPendingNote() {
 }
 function setAuto(v) {
   R.auto = v;
+  if (settings.auto !== v) { settings.auto = v; saveSettings(); } // remembered across runs and restarts
   if (v && R.pending) passPending();
   updateControls();
 }
@@ -1198,6 +1199,7 @@ async function init() {
   };
   $('#updateBtn').onclick = applyUpdate;
   $('#version').ondblclick = () => checkUpdate(false);
+  R.auto = !!settings.auto;
   updateControls();
   checkUpdate(true);
   setInterval(() => checkUpdate(true), 30 * 60 * 1000);

@@ -152,6 +152,35 @@ module.exports = (win, app) => {
       check('12. Pre-approval: auto-check triggered, sent to the asker once, then used up', /"i":/.test(auto11 || '') && /delivered/.test(r12) && a12b === a12 + 1 && left === 0 && /error/.test(again), `auto=${auto11}; ${r12}; asker ${a12}→${a12b}; second try ${again}`);
       await js('delete window.__autoMod; true');
 
+      // ---- 13. Empty box after the latest reply: still reads the real reply ----
+      const r13 = await js(`run(panes[0], pgRead, '.bot', '#stop', '.user')`);
+      await site(0, 'postEmpty(); true');
+      const r13b = await js(`run(panes[0], pgRead, '.bot', '#stop', '.user')`);
+      check('13. Empty reply box at the end is skipped', r13b.text && r13b.text === r13.text, `before "${(r13.text || '').slice(0, 40)}" after "${(r13b.text || '').slice(0, 40)}"`);
+
+      // ---- 14. Long text becomes an attachment chip: waits for it, sends once, moderator can read it ----
+      await js('R.inflight = null; R.held = []; R.blocker = ""; if (R.on) setRelay(false); true');
+      await site(0, 'cfg.chipOver = 2000; true');
+      const a14 = await recv(0);
+      const long = 'LONG ' + 'x'.repeat(5000);
+      await js(`(async () => { const e = { id: 't14', from: 1, to: 0, conv: 'c', dest: 'd', hash: 'h14', num: '014', state: 'captured', capturedAt: nowIso(), attempts: 0, answers: 0, base: { count: 0, id: '', hash: '', userCount: (await readPane(0)).userCount }, headHash: hashText(norm(${JSON.stringify(long)}).slice(0, 120)), out: ${JSON.stringify(long)}, files: [] }; R.ledger.push(e); R.inflight = e.id; await submit(e); return true; })()`);
+      await sleep(1500);
+      const a14b = await recv(0);
+      const st14 = await js(`(R.ledger.find(e => e.id === 't14') || {}).state`);
+      const rs14 = await js(`runTool('read_sent', { pane: 1 }).then(r => (r.text || r.error || '').slice(0, 10))`);
+      check('14. Attachment chip: waits for it to load, sends once, read_sent shows the text', a14b === a14 + 1 && st14 === 'awaiting' && rs14 === 'LONG xxxxx', `ALPHA ${a14}→${a14b}; state ${st14}; read_sent "${rs14}"`);
+
+      // ---- 15. Chip never sends: blocked with a clear message, not marked arrived ----
+      await js('R.inflight = null; R.blocker = ""; true');
+      await site(0, 'cfg.chipStuck = true; true');
+      const a15 = await recv(0);
+      await js(`(async () => { const e = { id: 't15', from: 1, to: 0, conv: 'c', dest: 'd', hash: 'h15', num: '015', state: 'captured', capturedAt: nowIso(), attempts: 0, answers: 0, base: { count: 0, id: '', hash: '', userCount: (await readPane(0)).userCount }, headHash: 'zz', out: ${JSON.stringify(long + 'B')}, files: [] }; R.ledger.push(e); R.inflight = e.id; await submit(e); return true; })()`);
+      const a15b = await recv(0);
+      const st15 = await js(`(R.ledger.find(e => e.id === 't15') || {}).state`);
+      const bl15 = await js('R.blocker');
+      check('15. Stuck attachment: not marked arrived, blocker explains it', a15b === a15 && st15 === 'uncertain' && /still sitting/.test(bl15), `ALPHA ${a15}→${a15b}; state ${st15}; blocker "${(bl15 || '').slice(0, 70)}"`);
+      await site(0, 'cfg.chipOver = 0; cfg.chipStuck = false; true');
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

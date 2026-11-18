@@ -217,7 +217,7 @@ ipcMain.handle('pane:call', async (e, i, method, args = []) => {
     case 'back': if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return true;
     case 'forward': if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); return true;
     case 'reload': wc.reload(); return true;
-    case 'focus': wc.focus(); return true;
+    case 'focus': { const w = BrowserWindow.fromWebContents(e.sender); if (w && w.isFocused()) wc.focus(); return true; } // never pull typing away from another window
     case 'input': wc.sendInputEvent(args[0]); return true;
     case 'insertText': await wc.insertText(args[0]); return true;
     case 'bounds': v.setBounds(args[0]); return true;
@@ -237,7 +237,7 @@ const menuTemplate = [
   { role: 'viewMenu' },
   { role: 'windowMenu' }
 ];
-ipcMain.handle('host:focus', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w && !w.isDestroyed()) w.webContents.focus(); return true; });
+ipcMain.handle('host:focus', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w && !w.isDestroyed() && w.isFocused()) w.webContents.focus(); return true; });
 ipcMain.handle('window:new', () => { createWindow(true); return true; });
 
 // Embedded sites get no Node access and no preload

@@ -94,7 +94,10 @@ function pgRead(sel, busySel, userSel) {
   const vis = (e) => e.getClientRects().length > 0;
   let els;
   try { els = [...document.querySelectorAll(sel)].filter(vis); } catch (e) { return { error: 'bad selector', count: 0, text: '', busy: false }; }
-  const last = els[els.length - 1];
+  let last = els[els.length - 1];
+  // Skip empty boxes at the end (feedback bars, placeholders) and read the last reply that has text
+  const txt = (el) => (el.innerText || '').trim() || (el.textContent || '').trim(); // textContent covers replies the page hasn't drawn (off-screen)
+  for (let k = els.length - 1; k >= 0; k--) { if (txt(els[k])) { last = els[k]; break; } }
   let busy = false;
   if (busySel) { try { busy = [...document.querySelectorAll(busySel)].some(vis); } catch (e) {} }
   // generic signs that the AI is still working (stop buttons, streaming flags)
@@ -113,7 +116,7 @@ function pgRead(sel, busySel, userSel) {
       userLast = lu ? (lu.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300) : '';
     } catch (e) {}
   }
-  return { count: els.length, text: last ? (last.innerText || '').trim() : '', busy, id: last ? idOf(last) : '', userCount, userLast };
+  return { count: els.length, text: last ? txt(last) : '', busy, id: last ? idOf(last) : '', userCount, userLast };
 }
 function pgFocusInput(sel, clear) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -155,6 +158,23 @@ function pgInputText(sel) {
     if (inner) el = inner;
   }
   return /^(TEXTAREA|INPUT)$/.test(el.tagName) ? el.value : (el.innerText || '');
+}
+// What's still sitting in the input area: typed text and attachment chips (long pastes turn into chips on ChatGPT/Claude)
+function pgComposer(sel) {
+  const vis = (e) => e.getClientRects().length > 0;
+  let els;
+  try { els = [...document.querySelectorAll(sel)].filter(vis); } catch (e) { return { text: '', chips: 0 }; }
+  let el = els[els.length - 1];
+  if (!el) return { text: '', chips: 0 };
+  if (!/^(TEXTAREA|INPUT)$/.test(el.tagName) && !el.isContentEditable) { const inner = el.querySelector('textarea, [contenteditable="true"]'); if (inner) el = inner; }
+  const text = /^(TEXTAREA|INPUT)$/.test(el.tagName) ? el.value : (el.innerText || '');
+  let region = el.closest('form');
+  if (!region) { region = el; for (let d = 0; d < 5 && region.parentElement; d++) region = region.parentElement; }
+  const chipSel = '[data-testid*="attachment" i], [data-testid*="file-tile" i], [data-testid*="pasted" i], button[aria-label*="Remove file" i], button[aria-label*="Remove attachment" i], button[aria-label*="Remove pasted" i]';
+  let chips = 0;
+  try { chips = [...region.querySelectorAll(chipSel)].filter(vis).filter((c) => !c.closest('[data-message-id], .user, .bot')).length; } catch (e) {}
+  if (!chips && /Show in text field|Pasted (text|content)/i.test(region.innerText || '')) chips = 1;
+  return { text: text.trim(), chips };
 }
 function pgTypeFallback(sel, text) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -514,9 +534,11 @@ async function typeAndSend(p, text, sendTries = 5) {
   if (!r.ok) throw new Error(`${p.label}: couldn't paste into the input box`);
   await sleep(600);
   let clicked = false;
+  const comp = await run(p, pgComposer, a.input);
+  if (comp && comp.chips) { sendTries = Math.max(sendTries, 40); setPhase(`${p.label} turned the long text into an attachment; waiting for it to load before sending`); }
   if (a.send) for (let k = 0; k < sendTries && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(500); }
   if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
-  if (document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you
+  if (document.hasFocus() && document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you (only in the window you're using)
   return { clicked };
 }
 // Press send again only when the text is still sitting in the box (so it can't be a double submit)
@@ -737,14 +759,19 @@ function setState(e, st, extra = {}) {
   e.state = st;
   e[st + 'At'] = nowIso();
   Object.assign(e, extra);
-  if (!ACTIVE.includes(st)) { delete e.out; delete e.files; } // keep the session file lean once a delivery is settled
+  if (!ACTIVE.includes(st)) { delete e.files; R.ledger.slice(0, -8).forEach((o) => { delete o.out; }); } // keep the session file lean once a delivery is settled
   refreshDelivery();
   return saveNow(); // durable before the next step touches a site
 }
 async function readPane(i) {
   const p = panes[i]; const a = adapterFor(p);
   if (!a) return null;
-  const r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
+  let r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
+  // A taught setting that reads blank: fall back to the built-in one for this site
+  if (!r.text && a.source === 'taught') {
+    const pr = presetFor(hostOf(curUrl(p)));
+    if (pr && pr.reply !== a.reply) { const r2 = await run(p, pgRead, pr.reply, a.busy || pr.busy || '', a.user || pr.user || ''); if (r2.text) r = r2; }
+  }
   r.key = msgKey(r.text);
   return r;
 }
@@ -927,12 +954,18 @@ async function submit(e) {
   await sendOnly(e.to, e.out, e.files || []);
   const v = await verifySubmitted(e);
   if (v === 'yes') await markSubmitted(e);
+  else if (v === 'stuck') { await setState(e, 'uncertain'); block(`${label(e.from)} RESPONSE ${e.num || '?'} is still sitting in ${label(e.to)}'s input box (as text or an attachment) and wasn't sent. Press send in ${label(e.to)}, then tell the moderator "it arrived". Or remove it and say "resend".`); }
   else { await setState(e, 'uncertain'); note(`Couldn't confirm that ${label(e.to)} received ${label(e.from)} RESPONSE ${e.num || '?'} yet. Checking before doing anything else.`); }
 }
 async function verifySubmitted(e) {
   const p = panes[e.to]; const a = adapterFor(p);
-  for (let k = 0; k < 8; k++) {
+  let stuck = false;
+  for (let k = 0; k < 40; k++) {
     await sleep(750);
+    const c = await run(p, pgComposer, a.input);
+    stuck = !!(c && (c.chips || (c.text && e.out && norm(e.out).startsWith(norm(c.text).slice(0, 40)))));
+    if (stuck) { if (k % 4 === 3 && a.send) await run(p, pgClickSend, a.send); continue; } // still in the box: not sent yet
+    if (k >= 8) break;
     const r = await readPane(e.to);
     if (!r) continue;
     if (r.userCount >= 0 && r.userCount > e.base.userCount) return 'yes';
@@ -940,7 +973,7 @@ async function verifySubmitted(e) {
     if (r.count > e.base.count || r.busy) return 'yes'; // the AI already started answering
     if (r.userCount < 0) { const left = norm(await run(p, pgInputText, a.input)); if (!left) return 'yes'; }
   }
-  return 'unknown';
+  return stuck ? 'stuck' : 'unknown';
 }
 async function markSubmitted(e) {
   if (e.answers) R.queued[e.to].splice(0, e.answers); // your answers are removed only once they really went out
@@ -957,6 +990,13 @@ async function reconcile(e, r) {
   if (!a) return;
   if (!r) { try { r = await readPane(e.to); } catch { return; } }
   if (!r) return;
+  const comp = await run(p, pgComposer, a.input);
+  if (comp && comp.chips && !r.busy) {
+    if (a.send) await run(p, pgClickSend, a.send);
+    if ((await verifySubmitted(e)) === 'yes') { await markSubmitted(e); return; }
+    block(`${label(e.from)} RESPONSE ${e.num || '?'} is still sitting in ${label(e.to)}'s input box as an attachment and wasn't sent. Press send in ${label(e.to)}, then tell the moderator "it arrived". Or remove it and say "resend".`);
+    return;
+  }
   if (isNewReplyFor(e, r) || r.count > e.base.count || r.busy || headMatches(e, r)) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }
   if (r.userCount >= 0 && r.userCount > e.base.userCount) {
     const matches = !r.userLast || hashText(norm(r.userLast).slice(0, 120)) === e.headHash || norm(e.out || '').startsWith(norm(r.userLast).slice(0, 60));
@@ -1180,6 +1220,8 @@ const MOD_TOOLS = [
     input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['mark_arrived', 'resend', 'cancel', 'send_held', 'drop_held'] }, index: { type: 'integer' } }, required: ['action'] } },
   { name: 'check_panes', description: "Check whether each AI is idle or still working (stop button, streaming, text still changing), and whether its latest reply ends with END OF TURN. Use before acting, and when Justin asks if something is stuck.",
     input_schema: { type: 'object', properties: {} } },
+  { name: 'read_sent', description: "Read the exact text the relay last sent to a pane (and a few before it). Use this when the site shows a message as an attachment chip and you can't read it on the page.",
+    input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] }, back: { type: 'integer', description: '0 = latest (default), 1 = the one before…' } }, required: ['pane'] } },
   { name: 'read_pane', description: 'Read the latest reply currently shown in a pane.',
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] } }, required: ['pane'] } },
   { name: 'send_to_pane',
@@ -1204,9 +1246,9 @@ function relayStatus() {
 async function paneState(i) {
   const p = panes[i]; const a = adapterFor(p);
   if (!a) return { pane: label(i), ai: aiName(i), setup: false };
-  const r1 = await run(p, pgRead, a.reply, a.busy || '');
+  const r1 = await readPane(i);
   await sleep(2000);
-  const r2 = await run(p, pgRead, a.reply, a.busy || '');
+  const r2 = await readPane(i);
   const changing = msgKey(r1.text) !== msgKey(r2.text) || r1.count !== r2.count;
   return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_handled: knownHas(i, msgKey(r2.text)) };
 }
@@ -1226,6 +1268,7 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - To pick up a conversation, use relay_latest from the side that spoke last. It refuses messages that were already delivered: never force a repeat unless Justin explicitly asks.
 - If the relay is blocked, explain the blocker in one or two plain sentences and ask Justin which single message should go next. Use delivery_status and resolve_delivery. Never replay a pile of held or duplicate messages.
 - Replies to your own side messages (send_to_pane) are not forwarded automatically.
+- Long messages may show up on a site as an attachment chip. To see what was sent, use read_sent.
 - Before sending anything or saying an AI is done, call check_panes. Never send to an AI that is still working, even if it already wrote END OF TURN.
 - Anything you send to the AIs (answers, your own messages, edits, a new task) shows Justin an approval card with the exact text, and nothing goes out until he clicks Send (he may edit it first). Just call the tool; don't ask for permission in text first. If he declines, ask what he'd like instead.
 - Turn the relay on or off when he asks.
@@ -1354,7 +1397,7 @@ async function runTool(name, x) {
     case 'read_pane': {
       const p = P(x.pane); const a = adapterFor(p);
       if (!a) return { error: `${p.label} isn't set up. Ask Justin to click Teach.` };
-      const r = await run(p, pgRead, a.reply, '');
+      const r = await readPane((x.pane | 0) - 1);
       return { pane: p.label, reply_count: r.count, latest_reply: (r.text || '').slice(0, 10000) };
     }
     case 'send_to_pane': {
@@ -1376,6 +1419,13 @@ async function runTool(name, x) {
       R.preapproved.push({ id, text: ok.text, covers: x.covers || '', to: x.to || 'either' });
       autosave();
       return { saved: id, note: 'Used once, the next time an AI pauses to ask something it covers.' };
+    }
+    case 'read_sent': {
+      const to = (x.pane | 0) - 1;
+      const list = R.ledger.filter((e) => e.to === to && e.out).reverse();
+      const e = list[x.back | 0];
+      if (!e) return { error: 'No saved copy for that pane (only the last few deliveries are kept).' };
+      return { from: label(e.from), response: e.num || '?', state: e.state, sent_at: e.queuedAt || e.capturedAt, text: e.out.slice(0, 20000) };
     }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
@@ -1493,7 +1543,7 @@ function sanitizeHistory(h) {
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
+const TOOL_LABEL = { read_sent: 'Read what was sent', preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
 // An AI paused to ask Justin something; if he pre-approved a next step, let the moderator check and send it
 async function autoModerate(i, p) {
   if (window.__autoMod) return window.__autoMod(i, p); // test hook

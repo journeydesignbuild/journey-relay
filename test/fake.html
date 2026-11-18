@@ -14,7 +14,16 @@
 // Port 8002 = BETA  (Claude-like: no message ids, and a "N minutes ago" footer that keeps changing)
 const NAME = location.port === '8001' ? 'ALPHA' : 'BETA';
 const OTHER = NAME === 'ALPHA' ? 'BETA' : 'ALPHA';
-window.cfg = { auto: false, lag: 0, slow: false, footer: NAME === 'BETA', completeAt: 999, window: 2 };
+window.cfg = { auto: false, lag: 0, slow: false, footer: NAME === 'BETA', completeAt: 999, window: 2, chipOver: 0, chipStuck: false };
+// Like ChatGPT: a long paste becomes an attachment chip; send stays disabled while it "loads"
+let chip = null;
+const sendBtn = () => document.getElementById('send');
+function makeChip(t) {
+  chip = document.createElement('div'); chip.setAttribute('data-testid', 'attachment-chip'); chip.textContent = 'Pasted text · Show in text field'; chip._text = t;
+  box.after(chip); box.value = '';
+  sendBtn().disabled = true;
+  if (!cfg.chipStuck) setTimeout(() => { sendBtn().disabled = false; }, 2500);
+}
 const trim = () => { if (!cfg.window) return; for (const sel of ['.bot', '.user']) { const all = document.querySelectorAll(sel); for (let k = 0; k < all.length - cfg.window; k++) all[k].remove(); } };
 window.received = []; window.files = [];
 let n = 0, seq = 0;
@@ -22,7 +31,10 @@ const box = document.getElementById('box'), thread = document.getElementById('th
 document.getElementById('up').addEventListener('change', async (e) => { for (const f of e.target.files) window.files.push({ name: f.name, text: await f.text() }); });
 function addUser(t) { const u = document.createElement('div'); u.className = 'msg user'; u.textContent = t; thread.appendChild(u); trim(); }
 function send() {
-  const t = box.value; if (!t.trim()) return;
+  if (sendBtn().disabled) return;
+  let t = box.value;
+  if (chip) { t = chip._text + (t ? '\n' + t : ''); chip.remove(); chip = null; }
+  if (!t.trim()) return;
   window.received.push(t);
   if (cfg.lag) setTimeout(() => { box.value = ''; addUser(t); }, cfg.lag);
   else { box.value = ''; addUser(t); }
@@ -60,6 +72,8 @@ window.reviseLast = (text) => { const bs = document.querySelectorAll('.bot'); bs
 // Claude-style relative timestamp + icon glyph, ticking fast (1 "minute" per second)
 setInterval(() => document.querySelectorAll('.bot .foot').forEach((f) => { f.textContent = '\n' + (27 + Math.floor((Date.now() - f.parentElement._born) / 1000)) + ' minutes ago'; }), 1000);
 document.getElementById('send').onclick = send;
+box.addEventListener('input', () => { if (cfg.chipOver && box.value.length > cfg.chipOver) makeChip(box.value); });
+window.postEmpty = () => { const b = document.createElement('div'); b.className = 'msg bot'; thread.appendChild(b); };
 box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
 </script>
 </body>

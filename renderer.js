@@ -426,12 +426,16 @@ function buildPanes(startUrls) {
   });
 }
 const chatPath = (u) => { try { const x = new URL(u); return x.host + x.pathname; } catch { return ''; } };
+// The conversation itself, ignoring project slugs and other URL decoration ChatGPT/Claude add or drop
+const chatId = (u) => { const m = /\/(?:c|chat|app)\/([0-9a-f]{8}-[0-9a-f-]{8,}|[A-Za-z0-9_-]{12,})/i.exec(String(u || '')); return m ? m[1].toLowerCase() : ''; };
 function refreshPane(p) {
   const u = curUrl(p);
   const path = chatPath(u);
   // moved from one chat to a different one (not a brand-new chat getting its first URL)
-  if (p.lastPath && path && path !== p.lastPath && /\/(c|chat|app)\/[\w-]{8,}/.test(p.lastPath)) paneChatChanged(p.i);
-  if (path) p.lastPath = path;
+  // Only a move from one conversation to a DIFFERENT conversation counts (same chat id = same chat, whatever the URL says)
+  const id = chatId(u);
+  if (p.lastChatId && id && id !== p.lastChatId) paneChatChanged(p.i);
+  if (id) p.lastChatId = id;
   if (R.task) autosave();
   if (document.activeElement !== p.url) p.url.value = u;
   const a = adapterFor(p);
@@ -713,7 +717,7 @@ function hashText(str) { // cyrb53: fast, stable, good enough to tell messages a
   return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
 }
 const msgKey = (raw) => (raw ? hashText(norm(canonicalText(raw))) : '');
-const convKey = (i) => chatPath(curUrl(panes[i])) || `pane${i + 1}`;
+const convKey = (i) => chatId(curUrl(panes[i])) || chatPath(curUrl(panes[i])) || `pane${i + 1}`;
 const nowIso = () => new Date().toISOString();
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '?');
 const knownHas = (i, k) => R.known[i].includes(k);
@@ -993,7 +997,7 @@ function deliveryText() {
     const st = fl.state === 'queued' ? 'sending…' : fl.state === 'uncertain' ? 'checking whether it arrived…' : `delivered ${fmtTime(fl.awaitingAt)} · waiting for reply`;
     return { cls: 'live', text: `${what} · ${st}${held}` };
   }
-  const last = [...R.ledger].reverse().find((x) => x.state === 'completed' || x.state === 'awaiting');
+  const last = [...R.ledger].reverse().find((x) => x.awaitingAt);
   if (last) return { cls: '', text: `Last: ${label(last.from)} R${last.num || '?'} → ${label(last.to)} · delivered ${fmtTime(last.awaitingAt)}${last.completedAt ? ` · reply received ${fmtTime(last.completedAt)}` : ''}${held}` };
   return { cls: '', text: R.held.length ? `${R.held.length} message(s) held` : 'Nothing delivered yet in this session.' };
 }

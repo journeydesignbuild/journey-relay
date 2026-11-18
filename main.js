@@ -337,9 +337,16 @@ ipcMain.handle('drive:save', (_e, { folder, name, content }) => {
     fs.mkdirSync(dir, { recursive: true });
     const finalName = uniquePath(dir, cleanName(name));
     fs.writeFileSync(path.join(dir, finalName), String(content ?? ''), 'utf8');
+    // Local backup: Google Drive can refuse a file (account rules) and remove it; this copy stays on the PC
+    try {
+      const bak = path.join(app.getPath('userData'), 'files', cleanName(folder));
+      fs.mkdirSync(bak, { recursive: true });
+      fs.writeFileSync(path.join(bak, finalName), String(content ?? ''), 'utf8');
+    } catch {}
     return { ok: true, name: finalName, abs: path.join(dir, finalName), rel: `${onDrive ? 'My Drive/' : 'Documents/'}Journey Relay/${cleanName(folder)}/${finalName}`, onDrive };
   } catch (err) { return { ok: false, error: String(err.message || err) }; }
 });
+ipcMain.handle('files:openBackup', () => { const d = path.join(app.getPath('userData'), 'files'); fs.mkdirSync(d, { recursive: true }); return shell.openPath(d); });
 ipcMain.handle('drive:open', (_e, folder) => {
   const { dir } = relayDir(folder || '');
   fs.mkdirSync(dir, { recursive: true });

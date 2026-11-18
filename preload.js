@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   statusUpdate: (st) => ipcRenderer.invoke('status:update', st),
   driveSave: (o) => ipcRenderer.invoke('drive:save', o),
   driveOpen: (folder) => ipcRenderer.invoke('drive:open', folder),
+  openBackupFiles: () => ipcRenderer.invoke('files:openBackup'),
   pane: (i, method, args) => ipcRenderer.invoke('pane:call', i, method, args),
   onPaneEvent: (fn) => ipcRenderer.on('pane:event', (_e, d) => fn(d))
 });

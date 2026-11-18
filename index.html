@@ -40,21 +40,6 @@
       <div id="busyLine" class="busy-line idle">Safe to type in the chats.</div>
       <div id="deliveryLine" class="delivery-line">Nothing delivered yet in this session.</div>
 
-      <section class="card sumcard">
-        <div class="row head">
-          <strong>Where we are</strong>
-          <span class="row tight">
-            <span id="sumState" class="muted small"></span>
-            <button id="sumNow" class="mini" title="Update the summary now">Update now</button>
-            <button id="copySummary" class="mini">Copy</button>
-            <button id="exportBtn" class="mini">Export</button>
-            <button id="filesBtn" class="mini" title="Open this session's folder in Google Drive">Files</button>
-            <button id="newBtn" class="mini">New</button>
-          </span>
-        </div>
-        <div id="summary" class="summary muted">Nothing yet. The moderator writes a short status here every 2 relays.</div>
-      </section>
-
       <section class="card mod">
         <div class="row head">
           <strong>Moderator</strong>
@@ -62,7 +47,7 @@
         </div>
         <div id="modChat"><div class="empty">Questions from the AIs show up here. Answer them, ask where things stand, or say "pause", "automate", "stop".</div></div>
         <form id="modForm">
-          <textarea id="modInput" rows="3" placeholder="Message the moderator… (Enter to send, Shift+Enter for a new line)"></textarea>
+          <textarea id="modInput" rows="2" placeholder="Message the moderator… (Enter to send, Shift+Enter for a new line)"></textarea>
           <button class="primary" id="modSend">Send</button>
         </form>
       </section>
@@ -94,6 +79,11 @@
         <input id="maxTurns" type="number" min="1" max="200" value="20" />
       </label>
       <label class="check"><input type="checkbox" id="pauseOnQ" /> Turn the relay off when an AI asks me a question</label>
+      <div class="row btns">
+        <button id="exportBtn" title="Save the full transcript as a Markdown file">Export</button>
+        <button id="filesBtn" title="Open this session's folder in Google Drive">Files</button>
+        <button id="newBtn" title="Start a new session">New session</button>
+      </div>
       <p class="muted small" style="margin:0">With the relay ON, every finished reply from either AI is copied to the other. To start, type into either chat. To pick up an old conversation, open both chats and switch it on, or ask the moderator to send one side's last reply across.</p>
     </section>
   </div>

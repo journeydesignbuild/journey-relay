@@ -1,6 +1,6 @@
 {
-  "version": "1.8.1",
-  "notes": "Pick which Google Drive account the relay saves to (Settings). Switching copies your sessions and files over.",
+  "version": "1.9.0",
+  "notes": "Pick your Google Drive account; \"Where we are\" removed; bigger moderator text with timestamps; typing box grows to 10 lines with numbered lists; AI 1 light blue, AI 2 salmon; thin scrollbars. Shared files also keep a local backup copy.",
   "files": [
     "main.js",
     "preload.js",

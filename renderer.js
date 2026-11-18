@@ -1095,7 +1095,8 @@ function updateControls() {
 
 // ---------- Summary ----------
 let sumTimer = null, sumBusy = false, sumAgain = false, hopsSinceSummary = 0;
-function summarizeSoon() {
+function summarizeSoon() { /* "Where we are" removed: no automatic summaries */ }
+function summarizeSoonOld() {
   if (sumBusy) { sumAgain = true; return; }
   clearTimeout(sumTimer);
   sumTimer = setTimeout(summarize, 600);
@@ -1123,6 +1124,7 @@ async function summarize() {
 }
 function renderSummary() {
   const el = $('#summary');
+  if (!el) return;
   el.textContent = summaryText || 'Nothing yet.';
   el.classList.toggle('muted', !summaryText);
 }
@@ -1339,10 +1341,10 @@ function askApproval(title, text) {
       const finalText = ta.value;
       // collapse to a one-line record; click it to see the text
       d.innerHTML = '<details><summary class="ap-title"></summary><div class="ap-body"></div></details>';
-      $('.ap-title', d).textContent = `${ok ? 'Sent' : 'Not sent'} · ${title}`;
+      $('.ap-title', d).textContent = `${hm()} · ${ok ? 'Sent' : 'Not sent'} · ${title}`;
       $('.ap-body', d).textContent = finalText;
       d.classList.add(ok ? 'ok' : 'no');
-      chatLog.push({ kind: 'tool', text: `${ok ? 'Approved' : 'Declined'}: ${title} — ${short(finalText, 200)}` });
+      chatLog.push({ kind: 'tool', text: `${ok ? 'Approved' : 'Declined'}: ${title} — ${short(finalText, 200)}`, t: nowIso() });
       autosave();
       resolve(ok ? { ok: true, text: finalText, edited: finalText !== text } : { ok: false });
     };
@@ -1363,13 +1365,19 @@ function md(s) {
   h = h.replace(/(?:<li>.*<\/li>\n?)+/g, (m) => `<ul>${m.replace(/\n/g, '')}</ul>`);
   return h.replace(/\n/g, '<br>');
 }
-function modMsg(kind, text) {
-  if (!restoring) { chatLog.push({ kind, text }); autosave(); }
+const hm = (d) => (d ? new Date(d) : new Date()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+function modMsg(kind, text, at) {
+  at = at || nowIso();
+  if (!restoring) { chatLog.push({ kind, text, t: at }); autosave(); }
   const box = $('#modChat');
   const empty = $('.empty', box); if (empty) empty.remove();
   const d = document.createElement('div');
   d.className = 'm ' + kind;
   if (kind === 'ai') d.innerHTML = md(text); else d.textContent = text;
+  const ts = document.createElement('span');
+  ts.className = 'ts';
+  ts.textContent = hm(at);
+  if (/^sys|^tool/.test(kind)) d.prepend(ts); else d.appendChild(ts);
   box.appendChild(d);
   box.scrollTop = 1e9;
 }
@@ -1658,7 +1666,7 @@ function applySession(j, loadUrls) {
   modHistory.length = 0; (j.modHistory || []).forEach((m) => modHistory.push(m));
   $('#modChat').innerHTML = '';
   chatLog.length = 0;
-  (j.chatLog || []).forEach((m) => { modMsg(m.kind, m.text); chatLog.push(m); });
+  (j.chatLog || []).forEach((m) => { modMsg(m.kind, m.text, m.t); chatLog.push(m); });
   if (!chatLog.length) $('#modChat').innerHTML = '<div class="empty">Session restored.</div>';
   $('#task').value = R.task;
   if (loadUrls) (j.urls || []).forEach((u, i) => { if (u && /^https?:/.test(u) && u !== curUrl(panes[i])) { try { panes[i].wv.loadURL(u); } catch {} } });
@@ -1666,7 +1674,6 @@ function applySession(j, loadUrls) {
   updateControls();
   refreshDelivery();
   updateSessionName();
-  if (!summaryText && logEntries.some((e) => e.kind === 'reply')) summarizeSoon();
 }
 function warnIfActiveElsewhere(j) {
   const a = j && j.activeOn;
@@ -1735,14 +1742,40 @@ async function init() {
   setTimeout(syncPaneBounds, 300);
   $('#cancelSettings').onclick = () => $('#settings').close();
   $('#resetFramework').onclick = async () => { const d = await window.api.getDefaults(); $('#sFramework').value = d.framework; };
-  $('#copySummary').onclick = async () => { await window.api.clipWrite(summaryText || $('#summary').innerText); $('#sumState').textContent = 'copied'; setTimeout(() => ($('#sumState').textContent = ''), 1500); };
   $('#exportBtn').onclick = exportTranscript;
   $('#filesBtn').onclick = () => window.api.driveOpen(session ? sessionDriveFolder() : '');
-  $('#sumNow').onclick = () => { hopsSinceSummary = 0; summarize(); };
+  $('#filesBtn').oncontextmenu = (e) => { e.preventDefault(); window.api.openBackupFiles(); };
+  $('#filesBtn').title = "Open this session's folder in Google Drive (right-click: local backup copies)";
   $('#sessionBar').onclick = () => window.__setMenu(true);
-  $('#newBtn').onclick = newSession;
-  $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; moderatorSend(t); });
-  $('#modInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#modForm').requestSubmit(); } });
+  $('#newBtn').onclick = () => { window.__setMenu(false); newSession(); };
+  $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; if (window.__growMod) window.__growMod(); moderatorSend(t); });
+  const mi = $('#modInput');
+  const grow = () => {
+    mi.style.height = 'auto';
+    const lh = parseFloat(getComputedStyle(mi).lineHeight) || 20;
+    const pad = parseFloat(getComputedStyle(mi).paddingTop) + parseFloat(getComputedStyle(mi).paddingBottom);
+    const max = lh * 10 + pad + 2;
+    mi.style.height = Math.min(mi.scrollHeight + 2, max) + 'px';
+    mi.style.overflowY = mi.scrollHeight + 2 > max ? 'auto' : 'hidden';
+  };
+  mi.addEventListener('input', grow);
+  window.__growMod = grow;
+  mi.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (!e.shiftKey) { e.preventDefault(); $('#modForm').requestSubmit(); setTimeout(grow, 0); return; }
+    // Shift+Enter inside a list: continue it ("2. " after "1. ", "- " after "- "); on an empty item, end the list
+    const pos = mi.selectionStart, val = mi.value;
+    const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+    const line = val.slice(lineStart, pos);
+    const num = /^(\s*)(\d+)\.\s(.*)$/.exec(line), bul = /^(\s*)([-*•])\s(.*)$/.exec(line);
+    const m = num || bul;
+    if (!m) return;
+    e.preventDefault();
+    if (!m[3].trim()) { mi.setRangeText('', lineStart, pos, 'end'); grow(); return; }
+    const next = num ? `${num[1]}${+num[2] + 1}. ` : `${bul[1]}${bul[2]} `;
+    mi.setRangeText('\n' + next, pos, mi.selectionEnd, 'end');
+    grow();
+  });
   $('#debugBtn').onclick = async () => {
     const t = await debugReport();
     await window.api.clipWrite(t);

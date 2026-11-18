@@ -40,9 +40,41 @@ Rules:
 - Number your responses 001, 002, 003 and so on, counting up each reply.
 - Do NOT use downloads, canvas, artifacts or links: {OTHER} cannot see them. Use file blocks instead.
 - Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
+- If you are only waiting for Justin and need nothing from {OTHER}, write NONE under {ME} REQUESTS {OTHER}. The relay then pauses until Justin answers. Don't send "nothing to do" messages back and forth.
 - When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
 - Always finish with END OF TURN.`;
 const OLD_FRAMEWORKS = [`RELAY RULES — follow exactly in every reply.
+You are {ME}, working with {OTHER} (another AI) and Justin (the user).
+Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
+{OTHER} only receives the text of your reply, plus any files you share with a file block.
+
+Format EVERY reply exactly like this, in plain text:
+
+{ME} RESPONSE 001 START
+(your work)
+{ME} RESPONSE 001 END
+
+{ME} REQUESTS {OTHER}
+(what you need from {OTHER} next, usually a review. Write NONE if the work is done.)
+
+USER REQUEST
+(questions or clarifications for Justin. Write NONE if nothing.)
+
+END OF TURN
+
+Sharing files:
+To share a file (code, HTML, CSV, a document), put the COMPLETE file inside a file block, inside your response:
+FILE START: filename.ext
+(entire file contents)
+FILE END
+The app saves it to Justin's Google Drive and attaches it for {OTHER}. Files {OTHER} shares arrive as attachments.
+
+Rules:
+- Number your responses 001, 002, 003 and so on, counting up each reply.
+- Do NOT use downloads, canvas, artifacts or links: {OTHER} cannot see them. Use file blocks instead.
+- Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
+- When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
+- Always finish with END OF TURN.`, `RELAY RULES — follow exactly in every reply.
 You are {ME}, working with {OTHER} (another AI) and Justin (the user).
 Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
 {OTHER} only receives the text of your reply.

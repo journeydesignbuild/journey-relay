@@ -125,6 +125,33 @@ module.exports = (win, app) => {
       const leaked = await site(0, `window.received.filter(t => t.includes('Create a spreadsheet')).length`);
       check('10. Text after END OF TURN ignored: relayed promptly, suggestions not forwarded', ok10 && secs < 30 && leaked === 0, `relayed after ${secs}s (fallback would be 120s); suggestion text forwarded ${leaked}x`);
 
+      // ---- 11. Waiting on Justin: the answer to the in-flight delivery asks nothing of the other AI ----
+      await js('if (!R.on) setRelay(true); true'); await sleep(2500);
+      const fl11 = await js('JSON.stringify(R.inflight && { to: R.inflight.to, state: R.inflight.state })');
+      const w = (await js('R.inflight ? R.inflight.to : 0')) | 0; const o = w === 0 ? 1 : 0;
+      const b11 = await recv(o);
+      let auto11 = null;
+      await js('window.__autoMod = (i, p) => { window.__autoArgs = { i, num: p.num, q: p.userRequest }; }; true');
+      await js('R.preapproved = [{ id: 1, text: "Yes, release PR #12.", covers: "release PR #12", to: "either" }]; true');
+      await site(w, `post(protocol('${w === 0 ? '006' : '018'}', 'PR #12 is cleared. Waiting for your go.', { request: 'NONE', question: 'OK to release PR #12?' }))`);
+      const off11 = await waitFor('!R.on', 40000);
+      await sleep(3000);
+      const b11b = await recv(o);
+      const waitNote = await js(`chatLog.some(m => /Waiting for you/.test(m.text))`);
+      const wo = await js('JSON.stringify(R.waitingOn)');
+      auto11 = await js('JSON.stringify(window.__autoArgs || null)');
+      check('11. Waiting on Justin: not forwarded, relay pauses with "Waiting for you"', off11 && b11b === b11 && waitNote && /"from":/.test(wo), `inflight ${fl11}; other side ${b11}→${b11b}; waitingOn=${wo}`);
+
+      // ---- 12. Pre-approved next step: moderator path sends it to the asker with no card, once ----
+      const a12 = await recv(w);
+      const r12 = await js(`runTool('answer_questions', { answer: 'x', to: 'ai${w + 1}', use_preapproval: 1, deliver_now: true }).then(r => JSON.stringify(r))`);
+      await sleep(4000);
+      const a12b = await recv(w);
+      const left = await js('R.preapproved.length');
+      const again = await js(`runTool('answer_questions', { answer: 'x', to: 'ai${w + 1}', use_preapproval: 1, deliver_now: true }).then(r => JSON.stringify(r))`);
+      check('12. Pre-approval: auto-check triggered, sent to the asker once, then used up', /"i":/.test(auto11 || '') && /delivered/.test(r12) && a12b === a12 + 1 && left === 0 && /error/.test(again), `auto=${auto11}; ${r12}; asker ${a12}→${a12b}; second try ${again}`);
+      await js('delete window.__autoMod; true');
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

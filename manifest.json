@@ -1,6 +1,6 @@
 {
-  "version": "1.10.2",
-  "notes": "Pick your Google Drive account; \"Where we are\" removed; bigger moderator text with timestamps; typing box grows to 10 lines with numbered lists; AI 1 light blue, AI 2 salmon; thin scrollbars. Shared files also keep a local backup copy. Settings sync through Google Drive; your API key syncs locked with a relay password (sign in once per computer). Anything after END OF TURN (like \"Create a doc\" suggestions) is ignored, so no more hang. Fix: replies are recognized even when the site only keeps the last few messages loaded (no more manual pick-ups). Fix: a ChatGPT URL change inside the same chat no longer cancels a delivery.",
+  "version": "1.11.0",
+  "notes": "Pick your Google Drive account; \"Where we are\" removed; bigger moderator text with timestamps; typing box grows to 10 lines with numbered lists; AI 1 light blue, AI 2 salmon; thin scrollbars. Shared files also keep a local backup copy. Settings sync through Google Drive; your API key syncs locked with a relay password (sign in once per computer). Anything after END OF TURN (like \"Create a doc\" suggestions) is ignored, so no more hang. Fix: replies are recognized even when the site only keeps the last few messages loaded (no more manual pick-ups). Fix: a ChatGPT URL change inside the same chat no longer cancels a delivery. Replies that ask nothing of the other AI are not forwarded (no more \"nothing to do\" ping-pong); waiting on you pauses the relay. Pre-approvals: OK a next step ahead of time and the moderator sends it when the AI asks.",
   "files": [
     "main.js",
     "preload.js",

@@ -43,6 +43,8 @@ const R = {
   on: false, busy: false, turn: 0, phase: 'Off',
   task: '', introduced: [false, false], complete: [false, false],
   queued: [[], []], lastFrom: null,
+  preapproved: [],         // Justin's standing OKs: [{id, text, to, covers}] used once when an AI waits on him
+  waitingOn: null,
   seen: ['', ''],          // last reply already handled in each pane (so old replies aren't re-sent)
   rebase: [false, false],  // pane switched to a different chat: re-read its starting point
   lastSent: ['', ''],      // start of what we last pasted into each pane (ignore it if it shows up as a "reply")
@@ -611,7 +613,7 @@ function parseTurn(raw) {
   return {
     name: start[1], num: start[2], payload, files,
     response: body.replace(/[A-Z0-9_\- ]*$/, '').trim(),
-    requests, userRequest, complete, hasEnd: !!eot
+    requests, hasRequests: !!(rq && rq.index < rqEnd), userRequest, complete, hasEnd: !!eot
   };
 }
 // ---------- Files ----------
@@ -672,6 +674,7 @@ function setRelay(on, why) {
   if (on === R.on) { updateControls(); return; }
   R.on = on;
   if (on) {
+    R.waitingOn = null;
     R.turn = 0; R.complete = [false, false]; stab[0] = stab[1] = null;
     R.blocker = '';
     for (const i of [0, 1]) if (!R.known[i].length) R.rebase[i] = true; // fresh: start from whatever is on screen now
@@ -869,6 +872,17 @@ async function route(i, text, key, opts = {}) {
     R.complete[i] = !!p.complete;
     const qBefore = questions.length;
     if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
+    // Nothing requested of the other AI: forwarding would just start a "nothing to do" ping-pong
+    if (!opts.force && p.hasRequests && isNone(p.requests)) {
+      const asks = p.userRequest && !isNone(p.userRequest);
+      R.waitingOn = asks ? { from: i, num: p.num } : null;
+      setRelay(false, asks
+        ? `Waiting for you: ${aiName(i)} asked you a question and has nothing for ${aiName(1 - i)} to do, so nothing was forwarded. Answer in the chat below; it goes to ${aiName(i)}.`
+        : p.complete ? `${aiName(i)} wrote SESSION COMPLETE and has nothing more for ${aiName(1 - i)}. Relay off.`
+        : `${aiName(i)} has nothing for ${aiName(1 - i)} to do (REQUESTS: NONE), so nothing was forwarded. Relay off.`);
+      if (asks && R.preapproved.length) autoModerate(i, p);
+      return;
+    }
     if (!opts.force) {
       if (R.complete[0] && R.complete[1]) { setRelay(false, 'Both AIs wrote SESSION COMPLETE. Relay off.'); summarizeSoon(); return; }
       if (R.turn >= maxTurns()) { holdMessage(i, text, key, p.num, `max turns (${maxTurns()}) reached`); setRelay(false, `Reached ${maxTurns()} turns. Relay off. The last message is held: turn the relay on and ask the moderator to send it.`); summarizeSoon(); return; }
@@ -1151,7 +1165,8 @@ const MOD_TOOLS = [
       answer: { type: 'string', description: "Justin's answer, written clearly" },
       question_ids: { type: 'array', items: { type: 'integer' }, description: 'Ids of the questions this resolves (Q numbers), if any' },
       to: { type: 'string', enum: ['both', 'ai1', 'ai2'], description: 'Default both' },
-      deliver_now: { type: 'boolean', description: 'Type it into the site(s) right away. Only works when the relay is not running.' }
+      deliver_now: { type: 'boolean', description: 'Type it into the site(s) right away. Only works when the relay is not running.' },
+      use_preapproval: { type: 'integer', description: 'Id of a pre-approval that clearly covers this question. Sends its saved text exactly, with no approval card. Only when the relay says it is waiting on Justin.' }
     }, required: ['answer'] } },
   { name: 'relay_control',
     description: 'Turn the relay on (replies from either AI get copied to the other) or off.',
@@ -1170,6 +1185,15 @@ const MOD_TOOLS = [
   { name: 'send_to_pane',
     description: "Type your own separate message into a pane and send it (not part of the word-for-word relay). Waits until that AI is idle. Its reply is then handled like any other reply.",
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] }, text: { type: 'string' } }, required: ['pane', 'text'] } },
+  { name: 'preapprove',
+    description: "Save a standing OK from Justin for a next step (e.g. \"if Claude asks to release PR #12, yes\"). When an AI later pauses to ask him something this clearly covers, you send it to that AI without another approval card and the relay continues. Each pre-approval is used once. Use action=list to show them, clear to remove one (id) or all.",
+    input_schema: { type: 'object', properties: {
+      action: { type: 'string', enum: ['add', 'list', 'clear'] },
+      text: { type: 'string', description: 'The exact answer to send, written to stand on its own' },
+      covers: { type: 'string', description: 'What question or step it covers, in a few words' },
+      to: { type: 'string', enum: ['either', 'ai1', 'ai2'], description: 'Default either' },
+      id: { type: 'integer' }
+    }, required: ['action'] } },
   { name: 'set_options', description: 'Change relay options.',
     input_schema: { type: 'object', properties: { max_turns: { type: 'integer' }, pause_on_question: { type: 'boolean' } } } }
 ];
@@ -1197,6 +1221,8 @@ How it works: the relay is one switch. When it's ON, every finished reply from e
 Your job: Justin messages you here, usually on the go. Keep replies short and plain.
 - Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
 - Answers ride along with the next message each AI receives. If the relay is OFF and Justin wants things moving again, turn it on; if nothing new is coming (both AIs are waiting), use relay_latest to send the last reply across so his answer goes out with it.
+- When the relay says "Waiting for you" and Justin answers, call answer_questions with to = the AI that asked and deliver_now=true, then relay_control on. Don't send his answer to both AIs at once.
+- If Justin OKs a step ahead of time ("if it asks to release, go ahead"), save it with preapprove. When the relay pauses because an AI is waiting on him and a pre-approval clearly covers that question, call answer_questions with use_preapproval, to = that AI, deliver_now=true, then relay_control on. If it doesn't clearly cover it, don't stretch it: tell Justin in one line and wait.
 - To pick up a conversation, use relay_latest from the side that spoke last. It refuses messages that were already delivered: never force a repeat unless Justin explicitly asks.
 - If the relay is blocked, explain the blocker in one or two plain sentences and ask Justin which single message should go next. Use delivery_status and resolve_delivery. Never replay a pile of held or duplicate messages.
 - Replies to your own side messages (send_to_pane) are not forwarded automatically.
@@ -1207,10 +1233,12 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - Push back when the two AIs loop, drift off task, or miss something, and tell him.
 
 Relay: ${relayStatus()}
-Delivery: ${deliveryText().text}
+${R.waitingOn ? `Waiting on Justin: ${aiName(R.waitingOn.from)} (AI ${R.waitingOn.from + 1}) asked a question in RESPONSE ${R.waitingOn.num || '?'} and has nothing for the other AI.
+` : ''}Delivery: ${deliveryText().text}
 Held messages: ${R.held.length ? R.held.map((h, k) => `#${k + 1} ${label(h.from)} RESPONSE ${h.num || '?'} (${h.why})`).join('; ') : 'none'}
 Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'}
 Goal: ${R.task || '(none set)'}
+Pre-approvals: ${R.preapproved.length ? R.preapproved.map((a) => `#${a.id} [${a.to}] ${a.covers ? a.covers + ': ' : ''}${short(a.text, 160)}`).join('; ') : 'none'}
 Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
 
 Open questions:
@@ -1232,7 +1260,17 @@ async function runTool(name, x) {
       const to = x.to || 'both';
       const targets = to === 'both' ? [0, 1] : [/1$/.test(to) ? 0 : 1];
       const ids = Array.isArray(x.question_ids) ? x.question_ids : [];
-      const ok = await askApproval(`Your answer → ${targets.map((i) => `${label(i)} (${aiName(i)})`).join(' + ')}`, x.answer);
+      let ok;
+      if (x.use_preapproval != null) {
+        const pa = R.preapproved.find((a) => a.id === x.use_preapproval);
+        if (!pa) return { error: 'No pre-approval with that id.' };
+        if (!R.waitingOn) return { error: 'Pre-approvals are only used when an AI is waiting on Justin.' };
+        if (targets.length !== 1 || targets[0] !== R.waitingOn.from) return { error: `Send it only to the AI that asked (ai${R.waitingOn.from + 1}).` };
+        if (pa.to !== 'either' && pa.to !== `ai${targets[0] + 1}`) return { error: `That pre-approval is for ${pa.to}.` };
+        R.preapproved = R.preapproved.filter((a) => a !== pa);
+        ok = { ok: true, text: pa.text };
+        note(`Used your pre-approval #${pa.id} (${pa.covers || 'next step'}) → ${label(targets[0])}.`);
+      } else ok = await askApproval(`Your answer → ${targets.map((i) => `${label(i)} (${aiName(i)})`).join(' + ')}`, x.answer);
       if (!ok.ok) return DECLINED;
       x.answer = ok.text;
       targets.forEach((i) => R.queued[i].push(x.answer));
@@ -1327,6 +1365,17 @@ async function runTool(name, x) {
       R.sideChat[p.i] = true; // its answer is a side conversation: not forwarded unless asked
       await sendOnly(p.i, ok.text);
       return { sent: true, note: 'Its reply is treated as a side conversation and is not forwarded unless Justin asks (relay_latest).' };
+    }
+    case 'preapprove': {
+      if (x.action === 'list') return { preapproved: R.preapproved };
+      if (x.action === 'clear') { R.preapproved = x.id ? R.preapproved.filter((a) => a.id !== x.id) : []; autosave(); return { preapproved: R.preapproved }; }
+      if (!x.text) return { error: 'text is required' };
+      const ok = await askApproval(`Pre-approve${x.covers ? ` (${x.covers})` : ''} → sent automatically when ${x.to === 'ai1' ? label(0) : x.to === 'ai2' ? label(1) : 'either AI'} asks`, x.text);
+      if (!ok.ok) return DECLINED;
+      const id = R.preapproved.reduce((m, a) => Math.max(m, a.id), 0) + 1;
+      R.preapproved.push({ id, text: ok.text, covers: x.covers || '', to: x.to || 'either' });
+      autosave();
+      return { saved: id, note: 'Used once, the next time an AI pauses to ask something it covers.' };
     }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
@@ -1444,12 +1493,19 @@ function sanitizeHistory(h) {
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
-async function moderatorSend(text) {
+const TOOL_LABEL = { preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
+// An AI paused to ask Justin something; if he pre-approved a next step, let the moderator check and send it
+async function autoModerate(i, p) {
+  if (window.__autoMod) return window.__autoMod(i, p); // test hook
+  for (let k = 0; modBusy && k < 120; k++) await sleep(1000);
+  const msg = `[Relay, automatic] ${aiName(i)} (AI ${i + 1}) paused in RESPONSE ${p.num || '?'} to ask Justin: "${short(p.userRequest, 600)}". It has nothing for the other AI. Check the pre-approvals. If one clearly covers this, send it (answer_questions with use_preapproval, to=ai${i + 1}, deliver_now=true, then relay_control on). If none clearly covers it, tell Justin in one line and wait.`;
+  return moderatorSend(msg, { auto: true });
+}
+async function moderatorSend(text, opts = {}) {
   if (modBusy || !text.trim()) return;
   if (!settings.apiKey) { modMsg('err', 'Add an Anthropic API key in ⚙ Settings to use the moderator.'); return; }
   modBusy = true; $('#modSend').disabled = true;
-  modMsg('you', text);
+  if (opts.auto) modMsg('tool', 'Checking your pre-approvals'); else modMsg('you', text);
   modHistory.push({ role: 'user', content: text });
   try {
     for (let step = 0; step < 10; step++) {
@@ -1568,7 +1624,7 @@ function newSession() {
   if (R.busy) { note('Wait a moment: the relay is sending.', true); return; }
   session = null; chatLog.length = 0; $('#task').value = '';
   logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
-  R.turn = 0; R.task = ''; R.queued = [[], []]; R.lastFrom = null; R.introduced = [false, false];
+  R.turn = 0; R.task = ''; R.queued = [[], []]; R.preapproved = []; R.lastFrom = null; R.introduced = [false, false];
   R.seen = ['', '']; R.rebase = [true, true];
   R.ledger = []; R.inflight = null; R.known = [[], []]; R.held = []; R.blocker = '';
   updateControls();
@@ -1645,7 +1701,7 @@ function startNewSession() { session = { id: makeSessionId(), created: new Date(
 function snapshot() {
   return {
     id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '', name: session.name || '',
-    title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued, seen: R.seen,
+    title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued, preapproved: R.preapproved, seen: R.seen,
     ledger: R.ledger, inflight: R.inflight, known: R.known, held: R.held, blocker: R.blocker,
     questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
     logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
@@ -1684,7 +1740,7 @@ function applySession(j, loadUrls) {
   restoring = true;
   session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '', name: j.name || '' };
   R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
-  R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
+  R.queued = j.queued || [[], []]; R.preapproved = j.preapproved || []; R.turn = 0; R.complete = [false, false];
   R.seen = j.seen || ['', ''];
   R.ledger = j.ledger || []; R.inflight = j.inflight || null; R.known = j.known || [[], []]; R.held = j.held || []; R.blocker = j.blocker || '';
   R.rebase = [!R.known[0].length, !R.known[1].length]; // older sessions: start from what's on screen, never replay

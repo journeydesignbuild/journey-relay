@@ -1170,10 +1170,19 @@ async function init() {
   buildPanes(last && last.urls);
   if (last) applySession(last, false);
   $('#sessionSel').onchange = (e) => switchSession(e.target.value);
+  // ☰ Relay menu (sits over the side panel only, so it never hides behind the site panes)
+  const menu = $('#relayMenu'), menuBtn = $('#menuBtn');
+  const setMenu = (open) => { menu.classList.toggle('hidden', !open); menuBtn.classList.toggle('open', open); menuBtn.setAttribute('aria-expanded', String(open)); if (open) $('#task').focus(); };
+  menuBtn.onclick = () => setMenu(menu.classList.contains('hidden'));
+  $('#menuClose').onclick = () => setMenu(false);
+  $('#phase').onclick = () => setMenu(true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.classList.contains('hidden')) setMenu(false); });
+  document.addEventListener('mousedown', (e) => { if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== menuBtn) setMenu(false); });
+  window.__setMenu = setMenu;
   $('#newWinBtn').onclick = () => window.api.newWindow();
   refreshSessionList();
-  $('#startBtn').onclick = () => runRelay($('#task').value, +$('#startFrom').value);
-  $('#contBtn').onclick = () => runRelay('', 0, true);
+  $('#startBtn').onclick = () => { window.__setMenu(false); runRelay($('#task').value, +$('#startFrom').value); };
+  $('#contBtn').onclick = () => { window.__setMenu(false); runRelay('', 0, true); };
   $('#autoBtn').onclick = () => setAuto(!R.auto);
   $('#pendingAutoBtn').onclick = () => setAuto(!R.auto);
   $('#pauseBtn').onclick = () => setPaused(!R.paused);
@@ -1181,7 +1190,7 @@ async function init() {
   $('#passBtn').onclick = passPending;
   $('#editBtn').onclick = () => { const ta = $('#pendingText'); ta.readOnly = !ta.readOnly; $('#editBtn').textContent = ta.readOnly ? 'Edit' : 'Lock'; if (!ta.readOnly) ta.focus(); };
   $('#maxTurns').onchange = updateControls;
-  $('#settingsBtn').onclick = openSettings;
+  $('#settingsBtn').onclick = () => { window.__setMenu(false); openSettings(); };
   $('#settingsForm').addEventListener('submit', submitSettings);
   $('#settings').addEventListener('close', () => setPanesVisible(true));
   // Clicking anywhere in the app's own panels takes keyboard focus back from the site panes
@@ -1204,6 +1213,7 @@ async function init() {
   $('#version').ondblclick = () => checkUpdate(false);
   R.auto = !!settings.auto;
   updateControls();
+  if (!R.task) window.__setMenu(true);
   checkUpdate(true);
   setInterval(() => checkUpdate(true), 30 * 60 * 1000);
 }

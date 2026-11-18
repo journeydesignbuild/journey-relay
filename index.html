@@ -11,45 +11,22 @@
     <span id="phase" class="phase idle">Idle</span>
     <span id="turnInfo" class="muted"></span>
     <span class="spacer"></span>
+    <span class="row tight runbar">
+      <button id="autoBtn" class="mini">Automate</button>
+      <button id="pauseBtn" class="mini">Pause</button>
+      <button id="stopBtn" class="mini danger">Stop</button>
+    </span>
     <button id="newWinBtn" class="mini" title="Open another relay window (Ctrl+N)">+ New window</button>
     <span id="version" class="muted small"></span>
     <button id="updateBtn" class="mini hidden">Update available</button>
     <button id="debugBtn" class="mini" title="Copy a report you can paste to Claude">Copy debug report</button>
+    <button id="menuBtn" class="menu-btn" title="Relay: session, task, start" aria-label="Relay menu" aria-expanded="false">☰ Relay</button>
   </header>
 
   <div id="app">
     <div id="panes"></div>
 
     <aside id="side">
-      <section class="card">
-        <div class="row head">
-          <strong>Relay</strong>
-          <button id="settingsBtn" class="icon" title="Settings" aria-label="Settings">⚙</button>
-        </div>
-        <label class="field">Session
-          <select id="sessionSel"><option value="">New session</option></select>
-        </label>
-        <label class="field">Task
-          <textarea id="task" rows="3" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
-        </label>
-        <div class="grid2">
-          <label class="field">Start with
-            <select id="startFrom"><option value="0">Web1</option><option value="1">Web2</option></select>
-          </label>
-          <label class="field">Max turns
-            <input id="maxTurns" type="number" min="1" max="100" value="20" />
-          </label>
-        </div>
-        <label class="check"><input type="checkbox" id="pauseOnQ" /> Pause when an AI asks me a question</label>
-        <div class="row btns">
-          <button id="startBtn" class="primary">Start</button>
-          <button id="contBtn">Continue</button>
-          <button id="autoBtn">Automate</button>
-          <button id="pauseBtn">Pause</button>
-          <button id="stopBtn" class="danger">Stop</button>
-        </div>
-      </section>
-
       <section id="pending" class="card pending hidden">
         <div class="row head">
           <strong id="pendingLabel">Web1 → Web2</strong>
@@ -64,7 +41,7 @@
         </div>
       </section>
 
-      <section class="card">
+      <section class="card sumcard">
         <div class="row head">
           <strong>Where we are</strong>
           <span class="row tight">
@@ -84,11 +61,40 @@
         </div>
         <div id="modChat"><div class="empty">Questions from the AIs show up here. Answer them, ask where things stand, or say "pause", "automate", "stop".</div></div>
         <form id="modForm">
-          <textarea id="modInput" rows="2" placeholder="Message the moderator… (Enter to send)"></textarea>
+          <textarea id="modInput" rows="3" placeholder="Message the moderator… (Enter to send, Shift+Enter for a new line)"></textarea>
           <button class="primary" id="modSend">Send</button>
         </form>
       </section>
     </aside>
+
+    <section id="relayMenu" class="card relay-menu hidden" aria-label="Relay setup">
+      <div class="row head">
+        <strong>Relay</strong>
+        <span class="row tight">
+          <button id="settingsBtn" class="icon" title="Settings" aria-label="Settings">⚙</button>
+          <button id="menuClose" class="icon" title="Close" aria-label="Close">✕</button>
+        </span>
+      </div>
+      <label class="field">Session
+        <select id="sessionSel"><option value="">New session</option></select>
+      </label>
+      <label class="field task-field">Task
+        <textarea id="task" placeholder="What should the two AIs work on? The relay rules are added automatically."></textarea>
+      </label>
+      <div class="grid2">
+        <label class="field">Start with
+          <select id="startFrom"><option value="0">Web1</option><option value="1">Web2</option></select>
+        </label>
+        <label class="field">Max turns
+          <input id="maxTurns" type="number" min="1" max="100" value="20" />
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" id="pauseOnQ" /> Pause when an AI asks me a question</label>
+      <div class="row btns">
+        <button id="startBtn" class="primary">Start</button>
+        <button id="contBtn">Continue</button>
+      </div>
+    </section>
   </div>
 
   <dialog id="settings">

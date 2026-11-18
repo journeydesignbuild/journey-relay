@@ -133,6 +133,7 @@ module.exports = (win, app) => {
     } catch (e) {
       console.log('SELFTEST ERROR', e);
     }
+    try { await js('window.__setMenu(true); true'); await sleep(300); const im2 = await win.capturePage(); require('fs').writeFileSync('/tmp/jp-menu.png', im2.toPNG()); await js('window.__setMenu(false); true'); await sleep(300); } catch (e) { console.log('menu shot failed', e); }
     try { const img = await win.capturePage(); require('fs').writeFileSync('/tmp/jp-shot.png', img.toPNG()); } catch (e) { console.log('shot failed', e); }
     app.quit();
   });

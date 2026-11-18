@@ -111,3 +111,17 @@ dialog h3 { margin: 0; }
 #updateBtn { background: #F08A3C; border-color: #F08A3C; color: #1A1205; font-weight: 700; }
 
 .row.btns > button { white-space: nowrap; padding: 0 6px; min-width: 0; font-size: 12px; }
+
+/* v1.4 layout: relay setup in a ☰ menu, moderator gets the full side panel */
+#app { position: relative; }
+.menu-btn { height: 28px; padding: 0 12px; font-weight: 700; }
+.menu-btn.open { background: #F08A3C; border-color: #F08A3C; color: #1A1205; }
+.runbar { margin-right: 6px; }
+.runbar button:disabled { opacity: .35; }
+.relay-menu { position: absolute; top: 8px; right: 8px; width: 420px; max-height: calc(100% - 16px); overflow-y: auto; z-index: 20; box-shadow: 0 12px 32px rgba(0,0,0,.55); border-color: #3A3F48; }
+.task-field textarea { min-height: 300px; resize: vertical; line-height: 1.45; }
+#side { overflow: hidden; }
+.sumcard #summary { max-height: 140px; overflow-y: auto; }
+.card.mod { flex: 1; min-height: 0; }
+#modChat { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+#modInput { min-height: 64px; }

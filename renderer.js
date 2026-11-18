@@ -1059,10 +1059,37 @@ function cleanHistory() {
   const last = modHistory[modHistory.length - 1];
   if (last && Array.isArray(last.content) && last.content.some((c) => c.type === 'tool_use')) modHistory.pop();
 }
+// Repair the moderator's history before every call: a restart, update or session switch in the
+// middle of a tool call can leave a tool request without its result, which the API rejects.
+function sanitizeHistory(h) {
+  const out = [];
+  for (let k = 0; k < h.length; k++) {
+    const m = h[k];
+    const isArr = Array.isArray(m.content);
+    if (m.role === 'assistant' && isArr && m.content.some((c) => c.type === 'tool_use')) {
+      const ids = m.content.filter((c) => c.type === 'tool_use').map((c) => c.id);
+      const nx = h[k + 1];
+      const paired = nx && nx.role === 'user' && Array.isArray(nx.content) && ids.every((id) => nx.content.some((c) => c.type === 'tool_result' && c.tool_use_id === id));
+      if (paired) { out.push(m, nx); k++; continue; }
+      const txt = m.content.filter((c) => c.type === 'text' && c.text);
+      if (txt.length) out.push({ role: 'assistant', content: txt });
+      continue;
+    }
+    if (m.role === 'user' && isArr && m.content.length && m.content.every((c) => c.type === 'tool_result')) continue; // orphaned results
+    out.push(m);
+  }
+  const asArr = (c) => (typeof c === 'string' ? [{ type: 'text', text: c }] : c);
+  const merged = [];
+  for (const m of out) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) last.content = [...asArr(last.content), ...asArr(m.content)];
+    else merged.push({ role: m.role, content: m.content });
+  }
+  while (merged.length && merged[0].role !== 'user') merged.shift();
+  return merged;
+}
 function trimmedHistory() {
-  let h = modHistory.slice(-40);
-  while (h.length && !(h[0].role === 'user' && typeof h[0].content === 'string')) h = h.slice(1);
-  return h;
+  return sanitizeHistory(modHistory.slice(-40));
 }
 const TOOL_LABEL = { answer_questions: 'Recorded your answer', relay_control: 'Relay', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', edit_pending: 'Edited the pending hop', set_options: 'Updated options' };
 async function moderatorSend(text) {

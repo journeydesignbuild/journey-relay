@@ -1,6 +1,6 @@
 {
-  "version": "1.5.0",
-  "notes": "Files shared through Google Drive (auto-named, never overwritten); Automate on by default; moderator on Opus 5.5 and asks your OK before sending; AI 1 / AI 2 names.",
+  "version": "1.5.1",
+  "notes": "Fix: moderator error about tool_use/tool_result after a restart or session switch.",
   "files": [
     "main.js",
     "preload.js",

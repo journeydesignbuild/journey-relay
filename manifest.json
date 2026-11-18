@@ -1,6 +1,6 @@
 {
-  "version": "1.5.2",
-  "notes": "Rename sessions (\u270e next to the Session list).",
+  "version": "1.5.3",
+  "notes": "Handles Claude replies that run tools before answering; Teach skips auto-generated ids; updated ChatGPT/Claude setups.",
   "files": [
     "main.js",
     "preload.js",

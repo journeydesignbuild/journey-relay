@@ -11,10 +11,10 @@ class Stop extends Error { constructor() { super('stopped'); } }
 // ---------- Site presets (best effort; use Teach if a site changes) ----------
 const PRESETS = [
   { hosts: ['chatgpt.com', 'chat.openai.com'], name: 'ChatGPT', ai: 'CHATGPT',
-    input: '#prompt-textarea', reply: '[data-message-author-role="assistant"]',
+    input: '#prompt-textarea, div[aria-label="Work with ChatGPT"]', reply: '[data-message-author-role="assistant"]',
     send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]' },
   { hosts: ['claude.ai'], name: 'Claude', ai: 'CLAUDE',
-    input: '[data-testid="chat-input"], div[contenteditable="true"].ProseMirror', reply: '.font-claude-response, .font-claude-message',
+    input: '[data-testid="chat-input"], div[contenteditable="true"].ProseMirror', reply: 'div[data-testid="assistant-message"], .font-claude-response, .font-claude-message',
     send: 'button[aria-label="Send message"], button[aria-label="Send Message"]', busy: '[data-is-streaming="true"], button[aria-label="Stop response"]' },
   { hosts: ['gemini.google.com'], name: 'Gemini', ai: 'GEMINI',
     input: 'rich-textarea .ql-editor, div[contenteditable="true"]', reply: 'model-response message-content, message-content',
@@ -230,7 +230,7 @@ function pgPick(kind) {
     let n = el;
     while (n && n.nodeType === 1 && n !== document.body && parts.length < 10) {
       let p = tag(n);
-      if (n.id && !/\d{3,}|:/.test(n.id)) { parts.unshift('#' + CSS.escape(n.id)); break; }
+      if (stableId(n.id)) { parts.unshift('#' + CSS.escape(n.id)); break; }
       const par = n.parentElement;
       if (par) { const sib = [...par.children].filter((x) => x.tagName === n.tagName); if (sib.length > 1) p += `:nth-of-type(${sib.indexOf(n) + 1})`; }
       parts.unshift(p);
@@ -238,8 +238,9 @@ function pgPick(kind) {
     }
     return parts.join(' > ');
   };
+  const stableId = (id) => id && !/\d{3,}|:/.test(id) && !/^_?r_|^:r|^radix-|^headlessui-|^react-|^mui-|^[a-z]{1,3}_[a-z0-9]{1,4}_?$/i.test(id) && id.length > 3;
   const uniq = (el) => {
-    if (el.id && !/\d{3,}|:/.test(el.id)) { const s = '#' + CSS.escape(el.id); if (count(s) === 1) return s; }
+    if (stableId(el.id)) { const s = '#' + CSS.escape(el.id); if (count(s) === 1) return s; }
     for (const s of attrSels(el)) if (count(s) === 1) return s;
     const c = clsSel(el);
     if (c && count(c) >= 1 && count(c) <= 3) return c;
@@ -530,8 +531,12 @@ async function sendAndWait(i, text, abortable = true, files = []) {
 // ---------- Marker protocol ----------
 function parseTurn(raw) {
   const t = String(raw || '').replace(/\r/g, '');
-  const start = /([A-Z0-9][A-Z0-9_\-]*(?: [A-Z0-9][A-Z0-9_\-]*){0,2}) RESPONSE (\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) START\b/d.exec(t);
-  if (!start) return null;
+  const starts = [...t.matchAll(/([A-Z0-9][A-Z0-9_\-]*(?: [A-Z0-9][A-Z0-9_\-]*){0,2}) RESPONSE (\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) START\b/dg)];
+  if (!starts.length) return null;
+  const ends = [...t.matchAll(/RESPONSE (?:\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) END\b/g)];
+  const lastEnd = ends.length ? ends[ends.length - 1].index : Infinity;
+  const before = starts.filter((m) => m.index < lastEnd);
+  const start = (before.length ? before : starts)[(before.length ? before : starts).length - 1];
   const from = start.indices[1][0];
   const after = start.index + start[0].length;
   const endRe = /RESPONSE (?:\d{1,4}|#{1,4}|[A-Z0-9-]{1,8}) END\b/g;

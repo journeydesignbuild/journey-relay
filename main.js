@@ -113,6 +113,7 @@ function loadSettings() {
   try {
     const s = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
     if (OLD_FRAMEWORKS.includes(s.framework)) s.framework = FRAMEWORK; // untouched old rules -> new default
+    for (const k of Object.keys(s.adapters || {})) { const ad = s.adapters[k]; if (ad && /^#(_?r_|:r|radix-|headlessui-)/i.test(ad.send || '')) ad.send = ''; } // auto-generated ids change every page load
     if (!s.opusMigrated) { s.modModel = 'claude-opus-5-5'; s.opusMigrated = true; } // moderator moved to Opus 5.5
     return s;
   } catch {

@@ -652,7 +652,7 @@ function setRelay(on, why) {
     R.turn = 0; R.complete = [false, false]; stab[0] = stab[1] = null;
     for (const i of [0, 1]) if (!R.seen[i]) R.rebase[i] = true; // fresh: start from whatever is on screen now
     note(why || 'Relay on. Replies from either AI are copied to the other.');
-  } else note(why || 'Relay off.');
+  } else { note(why || 'Relay off.'); summarizeSoon(); }
   if (settings.auto !== on && !why) { settings.auto = on; saveSettings(); } // remember your choice (not auto-stops)
   updateControls();
   autosave();
@@ -663,8 +663,10 @@ const endsWithEot = (t) => { const k = t.lastIndexOf('END OF TURN'); return k >=
 
 // Watch both panes; relay any reply that's finished and new
 let ticking = false; // one check at a time, so a reply can never be sent twice
+const working = [false, false];
+const lastText = ['', ''];
 async function tick() {
-  if (!R.on || R.busy || ticking) return;
+  if (R.busy || ticking) return;
   ticking = true;
   try { await tickOnce(); } finally { ticking = false; }
 }
@@ -677,6 +679,10 @@ async function tickOnce() {
     let r;
     try { r = await run(p, pgRead, a.reply, a.busy || ''); } catch { continue; }
     const t = r.text || '';
+    const w = !!r.busy || (t !== lastText[i] && !!lastText[i]);
+    lastText[i] = t;
+    if (w !== working[i]) { working[i] = w; refreshBusy(); }
+    if (!R.on) continue;
     if (R.rebase[i]) { R.seen[i] = norm(t); R.rebase[i] = false; stab[i] = null; continue; }
     if (!t || r.busy) { if (r.busy && t && norm(t) !== R.seen[i]) setPhase(`${label(i)} is working…`); stab[i] = null; continue; }
     const n = norm(t);
@@ -695,7 +701,38 @@ async function tickOnce() {
     await relayFrom(i, t);
     return;
   }
-  if (R.on && !R.busy) setPhase('On · waiting for a reply');
+  if (R.on && !R.busy) setPhase(working[0] || working[1] ? `${label(working[0] ? 0 : 1)} is working…` : 'On · waiting for a reply');
+}
+
+// "Safe to type" vs "Busy" + the live STATUS.md in Drive
+const isBusy = () => R.busy || working[0] || working[1];
+function refreshBusy() {
+  const el = $('#busyLine');
+  if (!el) return;
+  const b = isBusy();
+  const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${label(0)} (${aiName(0)}) is working` : working[1] ? `${label(1)} (${aiName(1)}) is working` : 'The relay is sending';
+  el.textContent = b ? `Busy · ${who}. Hands off the chats.` : 'Safe to type in the chats.';
+  el.className = 'busy-line ' + (b ? 'busy' : 'idle');
+  pushStatus();
+}
+let statusTimer = null;
+function pushStatus() {
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => {
+    const openQ = questions.filter((q) => !q.answered);
+    const lastNote = [...chatLog].reverse().find((m) => m.kind === 'sys' || m.kind === 'sys warn');
+    window.api.statusUpdate({
+      session: session ? sessionTitle() : (R.task || 'Untitled session'),
+      relay: R.on ? 'ON' : 'OFF',
+      phase: R.on ? R.phase : (isBusy() ? 'Relay off, but an AI is working' : 'Relay off'),
+      busy: isBusy(),
+      ai1: aiName(0), ai2: aiName(1),
+      turn: R.on ? `${R.turn} of ${maxTurns()}` : '-',
+      questions: openQ.map((q) => `Q${q.id} (${q.ai}): ${short(q.text, 140)}`).join(' | '),
+      summary: short(summaryText, 400),
+      last: lastNote ? `${short(lastNote.text, 120)} (${new Date().toLocaleTimeString()})` : ''
+    });
+  }, 1500);
 }
 
 // Copy one finished reply from pane i to the other pane
@@ -712,7 +749,6 @@ async function relayFrom(i, text, opts = {}) {
     R.complete[i] = !!p.complete;
     const qBefore = questions.length;
     if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
-    if (R.turn > 0 && R.turn % 2 === 0) summarizeSoon();
     if (!opts.force) {
       if (R.complete[0] && R.complete[1]) { setRelay(false, 'Both AIs wrote SESSION COMPLETE. Relay off.'); summarizeSoon(); return; }
       if (R.turn >= maxTurns()) { setRelay(false, `Reached ${maxTurns()} turns. Relay off. Turn it on to keep going.`); summarizeSoon(); return; }
@@ -727,6 +763,8 @@ async function relayFrom(i, text, opts = {}) {
     await sendOnly(to, out, hop.files);
     R.introduced[to] = true;
     R.turn++;
+    hopsSinceSummary++;
+    if (hopsSinceSummary >= 2 || !summaryText) summarizeSoon();
     note(`Passed ${label(i)} → ${label(to)}${answers.length ? ' + your answer' : ''}${hop.files.length ? ` + ${hop.files.length} file${hop.files.length > 1 ? 's' : ''}` : ''}.`);
   } catch (e) {
     note('Error: ' + e.message, true);
@@ -813,7 +851,9 @@ function transcript(maxChars = 40000, per = 4000) {
 
 // ---------- Status ----------
 function setPhase(t) {
+  const changed = R.phase !== t;
   R.phase = t;
+  if (changed) setTimeout(refreshBusy, 0);
   const el = $('#phase');
   el.textContent = R.on ? t : 'Off';
   el.className = 'phase ' + (R.on ? 'live' : 'idle');
@@ -832,14 +872,14 @@ function updateControls() {
 }
 
 // ---------- Summary ----------
-let sumTimer = null, sumBusy = false, sumAgain = false;
+let sumTimer = null, sumBusy = false, sumAgain = false, hopsSinceSummary = 0;
 function summarizeSoon() {
   if (sumBusy) { sumAgain = true; return; }
   clearTimeout(sumTimer);
   sumTimer = setTimeout(summarize, 600);
 }
 async function summarize() {
-  if (!logEntries.some((e) => e.kind === 'reply')) return;
+  if (!logEntries.some((e) => e.kind === 'reply')) { $('#summary').textContent = 'Nothing yet. This updates after every 2 passes.'; return; }
   if (!settings.apiKey) { $('#summary').textContent = 'Add an Anthropic API key in ⚙ Settings to get the summary.'; return; }
   sumBusy = true;
   $('#sumState').textContent = 'updating…';
@@ -849,8 +889,9 @@ async function summarize() {
     messages: [{ role: 'user', content: `Task: ${R.task || '(none)'}\n\nOpen questions for Justin: ${questions.filter((q) => !q.answered).map((q) => 'Q' + q.id + ' ' + short(q.text, 120)).join(' | ') || 'none'}\n\nTranscript:\n${transcript(40000, 4000)}` }]
   });
   sumBusy = false;
-  $('#sumState').textContent = res.error ? 'summary error' : '';
-  if (res.error) recordError('Summary API: ' + res.error);
+  $('#sumState').textContent = '';
+  if (res.error) { recordError('Summary API: ' + res.error); $('#summary').textContent = `Couldn't update the summary: ${res.error}`; }
+  else hopsSinceSummary = 0;
   if (!res.error) {
     summaryText = res.data.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n').trim();
     renderSummary();
@@ -922,6 +963,7 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - Push back when the two AIs loop, drift off task, or miss something, and tell him.
 
 Relay: ${relayStatus()}
+Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'}
 Goal: ${R.task || '(none set)'}
 Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
 
@@ -1212,8 +1254,10 @@ async function debugReport() {
     }
   }
   const drv = await window.api.driveInfo();
-  lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'}`);
-  lines.push(`Relay: ${relayStatus()} · task: ${short(R.task, 120) || '(none)'}`);
+  lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'} · sessions saved ${drv.found ? 'in Drive (Journey Relay/_sessions)' : 'on this computer only'} · computer: ${myHost}`);
+  lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);
+  lines.push(`Relay: ${relayStatus()}
+Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'} · task: ${short(R.task, 120) || '(none)'}`);
   lines.push(`Questions: ${questions.length} (${questions.filter((q) => !q.answered).length} open) · queued answers: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}`);
   lines.push(`Settings: stable ${settings.stableSec}s · no-marker ${settings.fallbackSec}s · timeout ${settings.timeoutMin}m · API key ${settings.apiKey ? 'set' : 'MISSING'} · models ${settings.modModel} / ${settings.sumModel}`);
   lines.push('', 'Recent errors:', ...(errors.length ? errors.slice(-20) : ['(none)']));
@@ -1245,6 +1289,7 @@ async function applyUpdate() {
 
 // ---------- Sessions: autosaved with a date, restored on restart ----------
 let session = null;          // { id, created }
+let myHost = '';
 const chatLog = [];          // moderator chat, for restoring
 let restoring = false;
 let saveTimer = null;
@@ -1281,6 +1326,14 @@ async function refreshSessionList() {
   sel.value = session && list.some((x) => x.id === session.id) ? session.id : '';
   const cur = session && list.find((x) => x.id === session.id);
   document.title = cur ? `Journey Relay · ${sessionLabel(cur)}` : 'Journey Relay';
+  updateSessionName();
+}
+function updateSessionName() {
+  const el = $('#sessionName');
+  if (!el) return;
+  el.textContent = session || R.task ? sessionTitle() : 'New session';
+  const d = session && new Date(session.created);
+  $('#sessionDate').textContent = d && !isNaN(d) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 }
 function applySession(j, loadUrls) {
   restoring = true;
@@ -1300,6 +1353,14 @@ function applySession(j, loadUrls) {
   if (loadUrls) (j.urls || []).forEach((u, i) => { if (u && /^https?:/.test(u) && u !== curUrl(panes[i])) { try { panes[i].wv.loadURL(u); } catch {} } });
   restoring = false;
   updateControls();
+  updateSessionName();
+  if (!summaryText && logEntries.some((e) => e.kind === 'reply')) summarizeSoon();
+}
+function warnIfActiveElsewhere(j) {
+  const a = j && j.activeOn;
+  if (!a || !a.host || a.host === myHost) return;
+  const mins = (Date.now() - new Date(a.at).getTime()) / 60000;
+  if (mins < 5) note(`Heads up: this session was active on ${a.host} ${Math.max(1, Math.round(mins))} min ago. Using it on two computers at once can mix things up.`, true);
 }
 async function switchSession(id) {
   if (R.busy) { note('Wait a moment: the relay is sending.', true); refreshSessionList(); return; }
@@ -1307,6 +1368,7 @@ async function switchSession(id) {
   const j = await window.api.loadSession(id);
   if (!j) { note('Could not open that session.', true); return; }
   applySession(j, true);
+  warnIfActiveElsewhere(j);
   refreshSessionList();
 }
 
@@ -1320,6 +1382,8 @@ async function init() {
   const last = list.length ? await window.api.loadSession(list[0].id) : null;
   buildPanes(last && last.urls);
   if (last) applySession(last, false);
+  myHost = await window.api.host();
+  if (last) warnIfActiveElsewhere(last);
   $('#sessionSel').onchange = (e) => switchSession(e.target.value);
   // ☰ Relay menu (sits over the side panel only, so it never hides behind the site panes)
   const menu = $('#relayMenu'), menuBtn = $('#menuBtn');
@@ -1362,6 +1426,8 @@ async function init() {
   $('#copySummary').onclick = async () => { await window.api.clipWrite(summaryText || $('#summary').innerText); $('#sumState').textContent = 'copied'; setTimeout(() => ($('#sumState').textContent = ''), 1500); };
   $('#exportBtn').onclick = exportTranscript;
   $('#filesBtn').onclick = () => window.api.driveOpen(session ? sessionDriveFolder() : '');
+  $('#sumNow').onclick = () => { hopsSinceSummary = 0; summarize(); };
+  $('#sessionBar').onclick = () => window.__setMenu(true);
   $('#newBtn').onclick = newSession;
   $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; moderatorSend(t); });
   $('#modInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#modForm').requestSubmit(); } });
@@ -1373,6 +1439,8 @@ async function init() {
   $('#updateBtn').onclick = applyUpdate;
   $('#version').ondblclick = () => checkUpdate(false);
   setInterval(tick, 1200);
+  setInterval(pushStatus, 60000); // heartbeat so STATUS.md shows the app is alive
+  myHost = await window.api.host();
   window.api.driveInfo().then((d) => { if (!d.found) note('Google Drive for desktop wasn\'t found, so shared files will save to Documents/Journey Relay. Install Drive for desktop to save them to Drive.', true); });
   updateControls();
   if (settings.auto !== false) setTimeout(() => setRelay(true, 'Relay on. Replies from either AI are copied to the other.'), 1500);

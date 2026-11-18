@@ -157,3 +157,19 @@ dialog h3 { margin: 0; }
 .relay-go:hover { background: #F49A55; }
 .relay-go.stop { background: #2A1717; border-color: #7A3434; color: #F2A0A0; }
 .relay-go.stop:hover { background: #3A1E1E; }
+
+.busy-line { margin-top: -4px; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 13px; }
+.busy-line.idle { background: #15201A; color: #8FD19E; border: 1px solid #2B4434; }
+.busy-line.busy { background: #2A1717; color: #F2A0A0; border: 1px solid #5A2A2A; }
+
+/* v1.7: session name on top, smaller relay control */
+.session-bar { height: auto; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 10px; border: 1px solid #262A31; background: #15181D; text-align: left; cursor: pointer; }
+.session-bar:hover { background: #1A1E24; }
+.session-name { font-size: 16px; font-weight: 700; color: #E6E8EB; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.relaycard { padding: 10px 12px; }
+.relay-big { font-size: 15px; font-weight: 800; }
+.dot { width: 10px; height: 10px; }
+.relay-go { height: 38px; min-width: 88px; font-size: 15px; border-radius: 8px; }
+.sumcard .row.tight { flex-wrap: wrap; justify-content: flex-end; }
+.sumcard .row.head { flex-wrap: wrap; row-gap: 6px; }
+.sumcard .row.head > strong { white-space: nowrap; }

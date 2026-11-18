@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
-  "notes": "Simpler relay: one Start/Stop switch. While on, every finished reply from either AI is copied to the other. Stricter \"is it really done?\" check before sending.",
+  "version": "1.7.0",
+  "notes": "Sessions save to Google Drive so another computer can pick them up; Safe to type / Busy indicator; live STATUS.md in Drive.",
   "files": [
     "main.js",
     "preload.js",

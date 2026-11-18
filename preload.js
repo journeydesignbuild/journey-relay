@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
   newWindow: () => ipcRenderer.invoke('window:new'),
   hostFocus: () => ipcRenderer.invoke('host:focus'),
   driveInfo: () => ipcRenderer.invoke('drive:info'),
+  host: () => ipcRenderer.invoke('app:host'),
+  statusUpdate: (st) => ipcRenderer.invoke('status:update', st),
   driveSave: (o) => ipcRenderer.invoke('drive:save', o),
   driveOpen: (folder) => ipcRenderer.invoke('drive:open', folder),
   pane: (i, method, args) => ipcRenderer.invoke('pane:call', i, method, args),

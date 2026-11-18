@@ -277,26 +277,6 @@ ipcMain.handle('update:apply', async () => {
   } catch (e) { return { error: e.message }; }
 });
 // ---------- Sessions (autosaved, one file per run) ----------
-const sessionsDir = () => path.join(app.getPath('userData'), 'sessions');
-const safeId = (id) => String(id || '').replace(/[^A-Za-z0-9_-]/g, '');
-ipcMain.handle('sessions:list', () => {
-  try {
-    return fs.readdirSync(sessionsDir()).filter((f) => f.endsWith('.json')).map((f) => {
-      try { const j = JSON.parse(fs.readFileSync(path.join(sessionsDir(), f), 'utf8')); return { id: j.id, created: j.created, updated: j.updated, title: String(j.title || j.task || '').slice(0, 90), task: String(j.task || '').slice(0, 90) }; } catch { return null; }
-    }).filter(Boolean).sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
-  } catch { return []; }
-});
-ipcMain.handle('sessions:load', (_e, id) => {
-  try { return JSON.parse(fs.readFileSync(path.join(sessionsDir(), safeId(id) + '.json'), 'utf8')); } catch { return null; }
-});
-ipcMain.handle('sessions:save', (_e, obj) => {
-  if (!obj || !safeId(obj.id)) return false;
-  fs.mkdirSync(sessionsDir(), { recursive: true });
-  const f = path.join(sessionsDir(), safeId(obj.id) + '.json');
-  fs.writeFileSync(f + '.tmp', JSON.stringify(obj));
-  fs.renameSync(f + '.tmp', f);
-  return true;
-});
 // ---------- Google Drive (through the Google Drive for desktop folder; no sign-in needed) ----------
 function findDriveRoot() {
   const s = loadSettings();
@@ -338,8 +318,87 @@ ipcMain.handle('drive:open', (_e, folder) => {
   fs.mkdirSync(dir, { recursive: true });
   return shell.openPath(dir);
 });
+// Sessions live in Google Drive (My Drive/Journey Relay/_sessions) when Drive for desktop is installed,
+// so another computer can pick them up. Older local sessions are still listed.
+const localSessionsDir = () => path.join(app.getPath('userData'), 'sessions');
+const driveSessionsDir = () => { const r = findDriveRoot(); return r ? path.join(r, 'Journey Relay', '_sessions') : null; };
+const safeId = (id) => String(id || '').replace(/[^A-Za-z0-9_-]/g, '');
+function readSessionFile(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
+function sessionFiles() {
+  const out = new Map(); // id -> { file, updated }
+  for (const dir of [localSessionsDir(), driveSessionsDir()].filter(Boolean)) {
+    let names = [];
+    try { names = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch {}
+    for (const n of names) {
+      const j = readSessionFile(path.join(dir, n));
+      if (!j || !j.id) continue;
+      const cur = out.get(j.id);
+      if (!cur || String(j.updated) > String(cur.j.updated)) out.set(j.id, { file: path.join(dir, n), j });
+    }
+  }
+  return out;
+}
+ipcMain.handle('sessions:list', () => [...sessionFiles().values()].map(({ j }) => ({
+  id: j.id, created: j.created, updated: j.updated, title: String(j.title || j.task || '').slice(0, 90), task: String(j.task || '').slice(0, 90),
+  activeOn: j.activeOn || null
+})).sort((a, b) => String(b.updated).localeCompare(String(a.updated))));
+ipcMain.handle('sessions:load', (_e, id) => { const hit = sessionFiles().get(safeId(id)); return hit ? hit.j : null; });
+ipcMain.handle('sessions:save', (_e, obj) => {
+  if (!obj || !safeId(obj.id)) return false;
+  obj.activeOn = { host: os.hostname(), at: new Date().toISOString() };
+  const data = JSON.stringify(obj);
+  for (const dir of [driveSessionsDir() || localSessionsDir()]) {
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, safeId(obj.id) + '.json');
+    fs.writeFileSync(f + '.tmp', data);
+    fs.renameSync(f + '.tmp', f);
+  }
+  return true;
+});
+ipcMain.handle('app:host', () => os.hostname());
+
+// Live status: My Drive/Journey Relay/STATUS.md, readable from a phone or by Claude through the Drive connector
+const statusByWindow = new Map();
+function writeStatusFile() {
+  const root = findDriveRoot();
+  const dir = root ? path.join(root, 'Journey Relay') : path.join(app.getPath('documents'), 'Journey Relay');
+  const list = [...statusByWindow.values()];
+  const busyAny = list.some((x) => x.busy);
+  const now = new Date();
+  const lines = [
+    '# Journey Relay status',
+    '',
+    `Updated: ${now.toLocaleString()} on ${os.hostname()}`,
+    `Overall: ${list.length ? (busyAny ? 'BUSY: hands off the chats' : 'IDLE: safe to type') : 'App closed'}`,
+    ''
+  ];
+  list.forEach((x, k) => {
+    lines.push(`## Window ${k + 1}: ${x.session || 'Untitled session'}`, '',
+      `- Relay: ${x.relay}`,
+      `- Right now: ${x.phase}`,
+      `- Safe to type in the chats: ${x.busy ? 'NO' : 'YES'}`,
+      `- AI 1: ${x.ai1} · AI 2: ${x.ai2}`,
+      `- Turn: ${x.turn}`,
+      `- Open questions for Justin: ${x.questions || 'none'}`,
+      `- Where we are: ${x.summary || '(no summary yet)'}`,
+      `- Last activity: ${x.last || '-'}`, '');
+  });
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'STATUS.md'), lines.join('\n'));
+    fs.writeFileSync(path.join(dir, '_status.json'), JSON.stringify({ updated: now.toISOString(), host: os.hostname(), windows: list }, null, 2));
+  } catch {}
+}
+ipcMain.handle('status:update', (e, st) => {
+  const id = e.sender.id;
+  if (!statusByWindow.has(id)) e.sender.once('destroyed', () => { statusByWindow.delete(id); writeStatusFile(); });
+  statusByWindow.set(id, st);
+  writeStatusFile();
+  return true;
+});
+
 ipcMain.handle('app:info', () => ({ version: localManifest().version, platform: `${process.platform} ${process.arch}`, electron: process.versions.electron }));
 
 app.whenReady().then(() => { Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate)); createWindow(false); });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => { statusByWindow.clear(); writeStatusFile(); if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(false); });

@@ -22,6 +22,11 @@
     <div id="panes"></div>
 
     <aside id="side">
+      <button id="sessionBar" class="session-bar" title="Session menu">
+        <span class="muted small">Session</span>
+        <span id="sessionName" class="session-name">New session</span>
+        <span id="sessionDate" class="muted small"></span>
+      </button>
       <section class="card relaycard">
         <div class="relay-status">
           <span id="relayDot" class="dot"></span>
@@ -32,12 +37,14 @@
         </div>
         <button id="relayBtn" class="relay-go">Start</button>
       </section>
+      <div id="busyLine" class="busy-line idle">Safe to type in the chats.</div>
 
       <section class="card sumcard">
         <div class="row head">
           <strong>Where we are</strong>
           <span class="row tight">
             <span id="sumState" class="muted small"></span>
+            <button id="sumNow" class="mini" title="Update the summary now">Update now</button>
             <button id="copySummary" class="mini">Copy</button>
             <button id="exportBtn" class="mini">Export</button>
             <button id="filesBtn" class="mini" title="Open this session's folder in Google Drive">Files</button>

@@ -96,6 +96,10 @@ module.exports = (win, app) => {
       for (let k = 0; k < 400; k++) { if (!(await js('R.on'))) break; await sleep(500); }
       step('relay after run: on=' + await js('R.on') + ' turns=' + await js('R.turn'));
       console.log('=== CHAT ===\n' + (await chat()).join('\n'));
+      await sleep(2500);
+      console.log('summary: ' + await js(`$('#summary').textContent`) + ' | session bar: ' + await js(`$('#sessionName').textContent + ' · ' + $('#sessionDate').textContent`) + ' | busy line: ' + await js(`$('#busyLine').textContent`));
+      console.log('drive tree: ' + require('child_process').execSync('cd "/tmp/fakedrive/My Drive" && find . -type f | sort').toString().trim().replace(/\n/g, ' | '));
+      console.log('STATUS.md:\n' + require('fs').readFileSync('/tmp/fakedrive/My Drive/Journey Relay/STATUS.md', 'utf8'));
       console.log('BETA files: ' + JSON.stringify(await js(`panes[1].wv.executeJavaScript('window.files')`)));
       const recvA = await js(`panes[0].wv.executeJavaScript('window.received')`);
       const recvB = await js(`panes[1].wv.executeJavaScript('window.received')`);

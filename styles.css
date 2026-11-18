@@ -125,3 +125,11 @@ dialog h3 { margin: 0; }
 .card.mod { flex: 1; min-height: 0; }
 #modChat { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 #modInput { min-height: 64px; }
+
+.m.approve { align-self: stretch; max-width: 100%; background: #1E1813; border: 1px solid #F08A3C; display: flex; flex-direction: column; gap: 6px; }
+.m.approve .ap-title { font-weight: 700; color: #F2A766; font-size: 12px; }
+.m.approve textarea { resize: vertical; }
+.m.approve.ok { border-color: #3B5F45; background: #15201A; }
+.m.approve.ok .ap-title { color: #8FD19E; }
+.m.approve.no { border-color: #2E333B; background: #1C2026; opacity: .7; }
+.m.approve.no .ap-title { color: #9AA1AB; }

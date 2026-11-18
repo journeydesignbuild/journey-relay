@@ -29,7 +29,7 @@
     <aside id="side">
       <section id="pending" class="card pending hidden">
         <div class="row head">
-          <strong id="pendingLabel">Web1 → Web2</strong>
+          <strong id="pendingLabel">AI 1 → AI 2</strong>
           <span class="muted small">Exact copy · nothing added</span>
         </div>
         <textarea id="pendingText" rows="7" readonly></textarea>
@@ -48,6 +48,7 @@
             <span id="sumState" class="muted small"></span>
             <button id="copySummary" class="mini">Copy</button>
             <button id="exportBtn" class="mini">Export</button>
+            <button id="filesBtn" class="mini" title="Open this session's folder in Google Drive">Files</button>
             <button id="newBtn" class="mini">New</button>
           </span>
         </div>
@@ -83,7 +84,7 @@
       </label>
       <div class="grid2">
         <label class="field">Start with
-          <select id="startFrom"><option value="0">Web1</option><option value="1">Web2</option></select>
+          <select id="startFrom"><option value="0">AI 1</option><option value="1">AI 2</option></select>
         </label>
         <label class="field">Max turns
           <input id="maxTurns" type="number" min="1" max="100" value="20" />
@@ -108,8 +109,8 @@
         <label class="field">Summary model <input id="sSumModel" /></label>
       </div>
       <div class="grid2">
-        <label class="field">Web1 start page <input id="sUrl0" /></label>
-        <label class="field">Web2 start page <input id="sUrl1" /></label>
+        <label class="field">AI 1 start page <input id="sUrl0" /></label>
+        <label class="field">AI 2 start page <input id="sUrl1" /></label>
       </div>
       <div class="grid3">
         <label class="field">Done after (sec, with END OF TURN) <input id="sStable" type="number" min="1" /></label>

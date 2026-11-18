@@ -65,7 +65,8 @@ function defaultAiName(i) {
   return (core || `WEB${i + 1}`).toUpperCase().replace(/[^A-Z0-9]/g, '') || `WEB${i + 1}`;
 }
 const aiName = (i) => (panes[i].nameInput.value || '').trim().toUpperCase().replace(/[^A-Z0-9 _-]/g, '') || defaultAiName(i);
-const label = (i) => `Web${i + 1}`;
+const label = (i) => `AI ${i + 1}`;
+const paneIdx = (who) => (/2$/.test(String(who)) ? 1 : 0); // works for old 'Web1/Web2' entries too
 const maxTurns = () => Math.max(1, parseInt($('#maxTurns').value, 10) || 20);
 const isNone = (s) => { const v = norm(s).replace(/[*_`'".:]/g, '').trim(); return !v || /^NONE\b/i.test(v) || /^N\/?A$/i.test(v); };
 
@@ -169,6 +170,23 @@ function pgPaste(sel, text) {
     return { ok: true, how: 'insertText' };
   }
   return { ok: true, how: 'paste' };
+}
+function pgAttach(name, content, type) {
+  const inputs = [...document.querySelectorAll('input[type="file"]')];
+  if (!inputs.length) return { ok: false, error: 'no file upload box on the page' };
+  const lower = name.toLowerCase();
+  const fits = (i) => {
+    const acc = (i.accept || '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean);
+    if (!acc.length || acc.includes('*') || acc.includes('*/*')) return true;
+    return acc.some((a) => (a.startsWith('.') && lower.endsWith(a)) || a === type || (a.endsWith('/*') && type.startsWith(a.slice(0, -1))));
+  };
+  const inp = inputs.filter(fits).pop() || inputs[inputs.length - 1];
+  const dt = new DataTransfer();
+  dt.items.add(new File([content], name, { type }));
+  inp.files = dt.files;
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true };
 }
 function pgClickSend(sel) {
   if (!sel) return false;
@@ -445,7 +463,7 @@ async function pressEnter(wv) {
   await wv.sendInputEvent({ type: 'char', keyCode: '\r' });
   await wv.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
 }
-async function typeAndSend(p, text) {
+async function typeAndSend(p, text, sendTries = 5) {
   const a = adapterFor(p);
   if (!a || !a.input) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
   const f = await run(p, pgFocusInput, a.input, true);
@@ -456,7 +474,7 @@ async function typeAndSend(p, text) {
   if (!r.ok) throw new Error(`${p.label}: couldn't paste into the input box`);
   await sleep(600);
   let clicked = false;
-  if (a.send) for (let k = 0; k < 5 && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(400); }
+  if (a.send) for (let k = 0; k < sendTries && !clicked; k++) { clicked = await run(p, pgClickSend, a.send); if (!clicked) await sleep(500); }
   if (!clicked) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
   await sleep(1500);
   const left = norm(await run(p, pgInputText, a.input));
@@ -492,12 +510,17 @@ async function readLatest(i) {
   const r = await run(p, pgRead, a.reply, '');
   return r.text || '';
 }
-async function sendAndWait(i, text, abortable = true) {
+async function sendAndWait(i, text, abortable = true, files = []) {
   const p = panes[i]; const a = adapterFor(p);
   if (!a) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
   const before = await run(p, pgRead, a.reply, a.busy || '');
   setPhase(`Sending to ${p.label}`);
-  await typeAndSend(p, text);
+  for (const f of files) {
+    const r = await run(p, pgAttach, f.name, f.content, mimeFor(f.name));
+    if (!r.ok) throw new Error(`${p.label}: couldn't attach ${f.name} (${r.error})`);
+    await sleep(2500); // let the site finish uploading
+  }
+  await typeAndSend(p, text, files.length ? 40 : 5);
   setPhase(`Waiting for ${p.label}`);
   const out = await waitForReply(p, before, text, abortable);
   setPhase(R.running ? 'Running' : 'Idle');
@@ -525,6 +548,12 @@ function parseTurn(raw) {
   const complete = /\bSESSION COMPLETE\b/.test(tail);
   let payload = t.slice(from, cut).replace(/\bSESSION COMPLETE\b/g, '').trimEnd();
   if (complete) payload += '\n\nSESSION COMPLETE';
+  // File blocks become attachments: pull them out and leave a placeholder
+  const files = [];
+  payload = payload.replace(/FILE START:?[ \t]*([^\n]*)\n([\s\S]*?)\n[ \t>*_`]*FILE END\b/g, (_m, name, body) => {
+    files.push({ name: fileName(name), content: cleanFileBody(body) });
+    return `\u0000FILE${files.length - 1}\u0000`;
+  });
   const rq = /(^|\n)[ \t>*#_`]*[A-Z0-9][A-Z0-9_\- ]*? REQUESTS [A-Z0-9][A-Z0-9_\- ]*?[ \t*_`:]*(?=\n|$)/.exec(tail);
   const rqEnd = ur ? urStart : (eot ? eot.index : tail.length);
   const requests = rq && rq.index < rqEnd ? tail.slice(rq.index + rq[0].length, rqEnd).trim() : '';
@@ -535,11 +564,56 @@ function parseTurn(raw) {
     userRequest = tail.slice(s, e).replace(/\bSESSION COMPLETE\b/g, '').trim();
   }
   return {
-    name: start[1], num: start[2], payload,
+    name: start[1], num: start[2], payload, files,
     response: body.replace(/[A-Z0-9_\- ]*$/, '').trim(),
     requests, userRequest, complete, hasEnd: !!eot
   };
 }
+// ---------- Files ----------
+function fileName(n) {
+  const v = String(n || '').replace(/[*_`]/g, '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '-');
+  return v || 'file.txt';
+}
+function cleanFileBody(b) {
+  let lines = String(b).replace(/\r/g, '').split('\n');
+  // drop chat-site UI labels that innerText picks up at the top of code boxes ("html", "Copy code"…) and code fences
+  for (let k = 0; k < 3 && lines.length; k++) {
+    const l = lines[0].trim();
+    if (/^```/.test(l) || /^(copy( code)?|copy|edit|run|download|[a-z0-9+#.-]{1,12})$/i.test(l) && !/[<{(;=]/.test(l)) lines.shift(); else break;
+  }
+  while (lines.length && /^(```|copy( code)?)$/i.test(lines[lines.length - 1].trim())) lines.pop();
+  return lines.join('\n').trim() + '\n';
+}
+function mimeFor(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  return ({ html: 'text/html', htm: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', csv: 'text/csv', md: 'text/markdown', xml: 'application/xml', svg: 'image/svg+xml', py: 'text/x-python', ts: 'text/plain' })[ext] || 'text/plain';
+}
+function sessionDriveFolder() {
+  if (!session) startNewSession();
+  if (!session.driveFolder) {
+    const d = new Date(session.created || Date.now()), z = (n) => String(n).padStart(2, '0');
+    session.driveFolder = `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}${z(d.getMinutes())} ${short(sessionTitle(), 40).replace(/[<>:"/\\|?*…]/g, '').trim()}`.trim();
+    autosave();
+  }
+  return session.driveFolder;
+}
+async function saveReplyFiles(i, p) {
+  for (const f of p.files || []) {
+    const r = await window.api.driveSave({ folder: sessionDriveFolder(), name: `${String(p.num).replace(/#/g, '')}-${aiName(i)}-${f.name}`, content: f.content });
+    if (r.ok) { f.saved = r; note(`Saved ${r.name} → ${r.onDrive ? 'Google Drive' : 'Documents (Drive for desktop not found)'}`); }
+    else { f.saved = null; note(`Couldn't save ${f.name}: ${r.error}`, true); }
+  }
+}
+// Build the outgoing text + attachments for a hop
+function hopContent(parsed) {
+  const files = (parsed.files || []).map((f) => ({ name: f.saved ? f.saved.name : f.name, content: f.content, saved: f.saved }));
+  const text = parsed.payload.replace(/\u0000FILE(\d+)\u0000/g, (_m, k) => {
+    const f = files[+k];
+    return f ? `[File attached: ${f.name}${f.saved ? ' · saved in ' + f.saved.rel : ''}]` : '';
+  });
+  return { text, files };
+}
+
 function intro(i) {
   const rules = settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i));
   return R.task ? rules + '\n\nTASK:\n' + R.task : rules;
@@ -611,6 +685,7 @@ async function handleReply(i, text) {
     }
   }
   addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: p.num });
+  if (p.files && p.files.length) await saveReplyFiles(i, p);
   R.lastFrom = i;
   R.complete[i] = !!p.complete;
   if (p.userRequest && !isNone(p.userRequest)) addQuestion(i, p.num, p.userRequest);
@@ -659,14 +734,15 @@ async function runRelay(task, startIdx, resume = false) {
       }
       if (R.complete[0] && R.complete[1]) { note('Both sides wrote SESSION COMPLETE. Done.'); break; }
       const to = 1 - from;
-      let out = parsed.payload;
+      const hop = hopContent(parsed);
+      let out = hop.text;
       if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(from)}'s first reply.\n\n` + out;
       if (!R.auto) { out = await approve(from, to, out); await gate(); }
       R.introduced[to] = true;
       const answers = R.queued[to].splice(0);
       if (answers.length) out += '\n\nUSER RESPONSE\n' + answers.join('\n\n');
-      note(`Passed ${label(from)} → ${label(to)}${answers.length ? ' + your answer' : ''}.`);
-      reply = await sendAndWait(to, out);
+      note(`Passed ${label(from)} → ${label(to)}${answers.length ? ' + your answer' : ''}${hop.files.length ? ` + ${hop.files.length} file${hop.files.length > 1 ? 's' : ''}` : ''}.`);
+      reply = await sendAndWait(to, out, true, hop.files);
       R.turn++;
       updateControls();
       parsed = await handleReply(to, reply);
@@ -720,7 +796,7 @@ function transcript(maxChars = 40000, per = 4000) {
   const lines = logEntries.map((e) => {
     let head;
     if (e.kind === 'setup') return `[You started the task with ${e.to}]\nTask: ${R.task}`;
-    if (e.kind === 'reply') head = `[${e.turn ? 'Turn ' + e.turn + ' · ' : ''}${e.who} (${aiName(e.who === 'Web1' ? 0 : 1)})]`;
+    if (e.kind === 'reply') head = `[${e.turn ? 'Turn ' + e.turn + ' · ' : ''}${e.who} (${aiName(paneIdx(e.who))})]`;
     else head = `[${e.who}${e.to ? ' → ' + e.to : ''}]`;
     const t = e.text.length > per ? e.text.slice(0, per) + ' …[truncated]' : e.text;
     return `${head}\n${t}`;
@@ -789,7 +865,7 @@ const MOD_TOOLS = [
     input_schema: { type: 'object', properties: {
       answer: { type: 'string', description: "Justin's answer, written clearly" },
       question_ids: { type: 'array', items: { type: 'integer' }, description: 'Ids of the questions this resolves (Q numbers), if any' },
-      to: { type: 'string', enum: ['both', 'web1', 'web2'], description: 'Default both' },
+      to: { type: 'string', enum: ['both', 'ai1', 'ai2'], description: 'Default both' },
       deliver_now: { type: 'boolean', description: 'Type it into the site(s) right away. Only works when the relay is not running.' }
     }, required: ['answer'] } },
   { name: 'relay_control',
@@ -817,7 +893,7 @@ function modSystem() {
   const openQ = questions.filter((q) => !q.answered);
   const doneQ = questions.filter((q) => q.answered);
   return `You are the moderator inside "Journey Relay", Justin's desktop app that relays a conversation between two AI chat websites.
-Web1 = ${aiName(0)} (${curUrl(panes[0])}). Web2 = ${aiName(1)} (${curUrl(panes[1])}).
+AI 1 = ${aiName(0)} (${curUrl(panes[0])}). AI 2 = ${aiName(1)} (${curUrl(panes[1])}).
 
 How it works: each AI replies in a fixed format (NAME RESPONSE ### START / END, a NAME REQUESTS OTHER block, a USER REQUEST block, END OF TURN). The app copies the RESPONSE and REQUESTS blocks word-for-word to the other AI. Questions from USER REQUEST blocks are shown to Justin in this chat (as Q1, Q2…) and listed below.
 
@@ -825,13 +901,14 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - Justin answers questions loosely: right away, later, several at once, or in passing. When a message answers something, call answer_questions with a clear standalone answer, the matching question_ids, and to="both" unless he says otherwise. Do not use deliver_now unless he asks to send it without continuing the relay.
 - If the relay is idle (finished or stopped) and Justin answers a question or says to keep going, record the answer and then call relay_control continue so the work picks up where it left off with his answer attached. Continue works with or without a task.
 - Never change relayed text unless Justin asks (edit_pending).
+- Anything you send to the AIs (answers, your own messages, edits, a new task) shows Justin an approval card with the exact text, and nothing goes out until he clicks Send (he may edit it first). Just call the tool; don't ask for permission in text first. If he declines, ask what he'd like instead.
 - Control the relay when he asks (start, pause, resume, stop, automate, manual, pass).
 - When he asks where things stand, answer from the summary and transcript.
 - Push back when the two AIs loop, drift off task, or miss something, and tell him.
 
 Relay: ${relayStatus()}
 Task: ${R.task || '(none yet)'}
-Answers waiting to be delivered: Web1 ${R.queued[0].length}, Web2 ${R.queued[1].length}
+Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
 ${R.pending ? `Hop waiting for approval (${label(R.pending.from)} → ${label(R.pending.to)}):\n${short($('#pendingText').value, 1500)}\n` : ''}
 Open questions:
 ${openQ.map((q) => `Q${q.id} [${q.ai}, response ${q.num}]: ${q.text}`).join('\n') || '(none)'}
@@ -850,8 +927,11 @@ async function runTool(name, x) {
   switch (name) {
     case 'answer_questions': {
       const to = x.to || 'both';
-      const targets = to === 'both' ? [0, 1] : [to === 'web1' ? 0 : 1];
+      const targets = to === 'both' ? [0, 1] : [/1$/.test(to) ? 0 : 1];
       const ids = Array.isArray(x.question_ids) ? x.question_ids : [];
+      const ok = await askApproval(`Your answer → ${targets.map((i) => `${label(i)} (${aiName(i)})`).join(' + ')}`, x.answer);
+      if (!ok.ok) return DECLINED;
+      x.answer = ok.text;
       targets.forEach((i) => R.queued[i].push(x.answer));
       ids.forEach((id) => { const q = questions.find((q) => q.id === id); if (q) q.answered = true; });
       renderQuestions(); refreshPendingNote(); autosave();
@@ -864,14 +944,17 @@ async function runTool(name, x) {
         }
         return { delivered: true, to: targets.map(label) };
       }
-      return { queued: true, delivers: 'with the next message each target AI receives', resolved: ids };
+      return { queued: true, delivers: 'with the next message each target AI receives', resolved: ids, edited_by_justin: ok.edited ? ok.text : undefined };
     }
     case 'relay_control': {
       switch (x.action) {
-        case 'start':
+        case 'start': {
           if (R.running) return { error: 'Already running' };
-          runRelay(x.task || $('#task').value, x.start_pane ? x.start_pane - 1 : +$('#startFrom').value);
+          let task = x.task || $('#task').value;
+          if (x.task) { const ok = await askApproval('Start a new run with this task', x.task); if (!ok.ok) return DECLINED; task = ok.text; }
+          runRelay(task, x.start_pane ? x.start_pane - 1 : +$('#startFrom').value);
           return { started: true };
+        }
         case 'continue':
           if (R.running) return { error: 'Already running' };
           runRelay('', 0, true);
@@ -894,6 +977,9 @@ async function runTool(name, x) {
     case 'send_to_pane': {
       if (R.running && !R.paused) return { error: 'The relay is running. Pause it first (relay_control pause).' };
       const p = P(x.pane);
+      const ok = await askApproval(`Message → ${p.label} (${aiName(p.i)})`, x.text);
+      if (!ok.ok) return DECLINED;
+      x.text = ok.text;
       addLog({ who: 'Moderator', to: p.label, text: x.text, kind: 'moderator' });
       const reply = await sendAndWait(p.i, x.text, false);
       addLog({ who: p.label, text: reply, kind: 'reply', turn: 0 });
@@ -901,10 +987,13 @@ async function runTool(name, x) {
       summarizeSoon();
       return { reply: reply.slice(0, 10000) };
     }
-    case 'edit_pending':
+    case 'edit_pending': {
       if (!R.pending) return { error: 'Nothing is waiting for approval' };
-      $('#pendingText').value = x.text;
+      const ok = await askApproval('Replace the hop waiting to be passed', x.text);
+      if (!ok.ok) return DECLINED;
+      $('#pendingText').value = ok.text;
       return { ok: true };
+    }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
       if (typeof x.pause_on_question === 'boolean') $('#pauseOnQ').checked = x.pause_on_question;
@@ -913,6 +1002,35 @@ async function runTool(name, x) {
   }
   return { error: 'Unknown tool' };
 }
+
+// Anything the moderator wants to send to the AIs waits for Justin's OK here
+function askApproval(title, text) {
+  return new Promise((resolve) => {
+    const box = $('#modChat');
+    const empty = $('.empty', box); if (empty) empty.remove();
+    const d = document.createElement('div');
+    d.className = 'm approve';
+    d.innerHTML = `<div class="ap-title"></div><textarea class="ap-text" rows="4"></textarea><div class="row btns"><button class="primary ap-ok">Send</button><button class="ap-no">Don't send</button></div>`;
+    $('.ap-title', d).textContent = title;
+    const ta = $('.ap-text', d);
+    ta.value = text;
+    ta.rows = Math.min(12, Math.max(3, text.split('\n').length + 1));
+    box.appendChild(d);
+    box.scrollTop = 1e9;
+    const done = (ok) => {
+      const finalText = ta.value;
+      d.querySelectorAll('button, textarea').forEach((el) => (el.disabled = true));
+      $('.ap-title', d).textContent = `${ok ? 'Sent' : 'Not sent'} · ${title}`;
+      d.classList.add(ok ? 'ok' : 'no');
+      chatLog.push({ kind: 'tool', text: `${ok ? 'Approved' : 'Declined'}: ${title} — ${short(finalText, 200)}` });
+      autosave();
+      resolve(ok ? { ok: true, text: finalText, edited: finalText !== text } : { ok: false });
+    };
+    $('.ap-ok', d).onclick = () => done(true);
+    $('.ap-no', d).onclick = () => done(false);
+  });
+}
+const DECLINED = { declined: true, note: 'Justin chose not to send this. Ask him what he wants instead.' };
 
 const modHistory = [];
 let modBusy = false;
@@ -1022,7 +1140,7 @@ async function submitSettings(e) {
 
 // ---------- Export / new session ----------
 function exportTranscript() {
-  const lines = [`# Journey Relay session — ${new Date().toLocaleString()}`, '', `**Task:** ${R.task || '(none)'}`, `**Web1:** ${aiName(0)} · **Web2:** ${aiName(1)}`, ''];
+  const lines = [`# Journey Relay session — ${new Date().toLocaleString()}`, '', `**Task:** ${R.task || '(none)'}`, `**AI 1:** ${aiName(0)} · **AI 2:** ${aiName(1)}`, ''];
   if (summaryText) lines.push('## Summary', '', summaryText, '');
   if (questions.length) { lines.push('## Questions', ''); questions.forEach((q) => lines.push(`- Q${q.id} (${q.ai})${q.answered ? ' ✓' : ''}: ${q.text.replace(/\n/g, ' ')}`)); lines.push(''); }
   lines.push('## Transcript', '');
@@ -1063,8 +1181,10 @@ async function debugReport() {
       } catch (e) { lines.push('  test failed: ' + e.message); }
     }
   }
-  lines.push('', `Relay: ${relayStatus()} · task: ${short(R.task, 120) || '(none)'}`);
-  lines.push(`Questions: ${questions.length} (${questions.filter((q) => !q.answered).length} open) · queued answers: Web1 ${R.queued[0].length}, Web2 ${R.queued[1].length}`);
+  const drv = await window.api.driveInfo();
+  lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'}`);
+  lines.push(`Relay: ${relayStatus()} · task: ${short(R.task, 120) || '(none)'}`);
+  lines.push(`Questions: ${questions.length} (${questions.filter((q) => !q.answered).length} open) · queued answers: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}`);
   lines.push(`Settings: stable ${settings.stableSec}s · no-marker ${settings.fallbackSec}s · timeout ${settings.timeoutMin}m · API key ${settings.apiKey ? 'set' : 'MISSING'} · models ${settings.modModel} / ${settings.sumModel}`);
   lines.push('', 'Recent errors:', ...(errors.length ? errors.slice(-20) : ['(none)']));
   lines.push('', 'Last log entries:', ...logEntries.slice(-8).map((e) => `  ${e.kind} · ${e.who}${e.to ? ' → ' + e.to : ''}: ${short(e.text, 160)}`));
@@ -1105,7 +1225,7 @@ function makeSessionId() {
 function startNewSession() { session = { id: makeSessionId(), created: new Date().toISOString() }; }
 function snapshot() {
   return {
-    id: session.id, created: session.created, updated: new Date().toISOString(),
+    id: session.id, created: session.created, updated: new Date().toISOString(), driveFolder: session.driveFolder || '',
     title: short(sessionTitle(), 90), task: R.task, urls: panes.map(curUrl), introduced: R.introduced, lastFrom: R.lastFrom, queued: R.queued,
     questions, summaryText, chatLog: chatLog.slice(-300), modHistory: modHistory.slice(-60),
     logEntries: logEntries.map((e) => ({ ...e, time: e.time instanceof Date ? e.time.toISOString() : e.time }))
@@ -1134,7 +1254,7 @@ async function refreshSessionList() {
 }
 function applySession(j, loadUrls) {
   restoring = true;
-  session = { id: j.id, created: j.created };
+  session = { id: j.id, created: j.created, driveFolder: j.driveFolder || '' };
   R.task = j.task || ''; R.introduced = j.introduced || [false, false]; R.lastFrom = j.lastFrom ?? null;
   R.queued = j.queued || [[], []]; R.turn = 0; R.complete = [false, false];
   questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
@@ -1201,6 +1321,7 @@ async function init() {
   $('#resetFramework').onclick = async () => { const d = await window.api.getDefaults(); $('#sFramework').value = d.framework; };
   $('#copySummary').onclick = async () => { await window.api.clipWrite(summaryText || $('#summary').innerText); $('#sumState').textContent = 'copied'; setTimeout(() => ($('#sumState').textContent = ''), 1500); };
   $('#exportBtn').onclick = exportTranscript;
+  $('#filesBtn').onclick = () => window.api.driveOpen(session ? sessionDriveFolder() : '');
   $('#newBtn').onclick = newSession;
   $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; moderatorSend(t); });
   $('#modInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#modForm').requestSubmit(); } });
@@ -1211,7 +1332,8 @@ async function init() {
   };
   $('#updateBtn').onclick = applyUpdate;
   $('#version').ondblclick = () => checkUpdate(false);
-  R.auto = !!settings.auto;
+  R.auto = settings.auto !== false;
+  window.api.driveInfo().then((d) => { if (!d.found) note('Google Drive for desktop wasn\'t found, so shared files will save to Documents/Journey Relay. Install Drive for desktop to save them to Drive.', true); });
   updateControls();
   if (!R.task) window.__setMenu(true);
   checkUpdate(true);

@@ -1,6 +1,6 @@
 {
-  "version": "1.4.0",
-  "notes": "Relay setup moved into a \u2630 Relay menu with a big task box; the moderator chat gets the whole side panel.",
+  "version": "1.5.0",
+  "notes": "Files shared through Google Drive (auto-named, never overwritten); Automate on by default; moderator on Opus 5.5 and asks your OK before sending; AI 1 / AI 2 names.",
   "files": [
     "main.js",
     "preload.js",

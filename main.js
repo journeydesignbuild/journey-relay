@@ -1,5 +1,6 @@
 // Journey Relay — main process
-const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView, shell } = require('electron');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
@@ -9,6 +10,38 @@ app.userAgentFallback = app.userAgentFallback
   .replace(/\s\S+\/[\d.]+(?= Chrome\/)/, '');
 
 const FRAMEWORK = `RELAY RULES — follow exactly in every reply.
+You are {ME}, working with {OTHER} (another AI) and Justin (the user).
+Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
+{OTHER} only receives the text of your reply, plus any files you share with a file block.
+
+Format EVERY reply exactly like this, in plain text:
+
+{ME} RESPONSE 001 START
+(your work)
+{ME} RESPONSE 001 END
+
+{ME} REQUESTS {OTHER}
+(what you need from {OTHER} next, usually a review. Write NONE if the work is done.)
+
+USER REQUEST
+(questions or clarifications for Justin. Write NONE if nothing.)
+
+END OF TURN
+
+Sharing files:
+To share a file (code, HTML, CSV, a document), put the COMPLETE file inside a file block, inside your response:
+FILE START: filename.ext
+(entire file contents)
+FILE END
+The app saves it to Justin's Google Drive and attaches it for {OTHER}. Files {OTHER} shares arrive as attachments.
+
+Rules:
+- Number your responses 001, 002, 003 and so on, counting up each reply.
+- Do NOT use downloads, canvas, artifacts or links: {OTHER} cannot see them. Use file blocks instead.
+- Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
+- When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
+- Always finish with END OF TURN.`;
+const OLD_FRAMEWORKS = [`RELAY RULES — follow exactly in every reply.
 You are {ME}, working with {OTHER} (another AI) and Justin (the user).
 Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
 {OTHER} only receives the text of your reply.
@@ -32,8 +65,7 @@ Rules:
 - Put ALL content directly in the reply text, including complete code. Do NOT use files, downloads, canvas, artifacts, attachments or links: {OTHER} cannot see them.
 - Text under USER RESPONSE is Justin's answer to an earlier question. Use it.
 - When the task is finished and you agree with {OTHER}, write SESSION COMPLETE on its own line right before END OF TURN.
-- Always finish with END OF TURN.`;
-const OLD_FRAMEWORKS = [`RELAY RULES — follow exactly in every reply.
+- Always finish with END OF TURN.`, `RELAY RULES — follow exactly in every reply.
 You are {ME}, working with {OTHER} (another AI) and Justin (the user).
 Your replies are copied word-for-word to {OTHER}, and {OTHER}'s replies are copied to you.
 
@@ -60,7 +92,7 @@ Rules:
 const DEFAULTS = {
   apiKey: '',
   apiBase: 'https://api.anthropic.com',
-  modModel: 'claude-sonnet-5-5',
+  modModel: 'claude-opus-5-5',
   sumModel: 'claude-haiku-5-5',
   urls: ['https://chatgpt.com', 'https://claude.ai'],
   names: ['', ''],
@@ -70,7 +102,9 @@ const DEFAULTS = {
   fallbackSec: 90,
   timeoutMin: 60,
   updateRepo: 'journeydesignbuild/journey-relay',
-  githubToken: ''
+  githubToken: '',
+  auto: true,
+  driveFolder: ''
 };
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
@@ -79,6 +113,7 @@ function loadSettings() {
   try {
     const s = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
     if (OLD_FRAMEWORKS.includes(s.framework)) s.framework = FRAMEWORK; // untouched old rules -> new default
+    if (!s.opusMigrated) { s.modModel = 'claude-opus-5-5'; s.opusMigrated = true; } // moderator moved to Opus 5.5
     return s;
   } catch {
     return { ...DEFAULTS };
@@ -260,6 +295,47 @@ ipcMain.handle('sessions:save', (_e, obj) => {
   fs.writeFileSync(f + '.tmp', JSON.stringify(obj));
   fs.renameSync(f + '.tmp', f);
   return true;
+});
+// ---------- Google Drive (through the Google Drive for desktop folder; no sign-in needed) ----------
+function findDriveRoot() {
+  const s = loadSettings();
+  const cands = [];
+  if (s.driveFolder) cands.push(s.driveFolder);
+  if (process.platform === 'win32') for (const L of 'DEFGHIJKLMNOPQRSTUVWXYZ') cands.push(`${L}:\\My Drive`);
+  const home = os.homedir();
+  if (process.platform === 'darwin') {
+    const cs = path.join(home, 'Library', 'CloudStorage');
+    try { fs.readdirSync(cs).filter((n) => n.startsWith('GoogleDrive-')).forEach((n) => cands.push(path.join(cs, n, 'My Drive'))); } catch {}
+  }
+  cands.push(path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'My Drive'), path.join(home, 'Google Drive'));
+  return cands.find((p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } }) || null;
+}
+const cleanName = (n) => String(n || 'file.txt').replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 120) || 'file.txt';
+function uniquePath(dir, name) {
+  const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
+  let candidate = name, n = 2;
+  while (fs.existsSync(path.join(dir, candidate))) candidate = `${base} (${n++})${ext}`;
+  return candidate;
+}
+function relayDir(folder) {
+  const root = findDriveRoot();
+  const baseDir = root ? path.join(root, 'Journey Relay') : path.join(app.getPath('documents'), 'Journey Relay');
+  return { dir: path.join(baseDir, cleanName(folder)), onDrive: !!root, root };
+}
+ipcMain.handle('drive:info', () => { const r = findDriveRoot(); return { found: !!r, root: r }; });
+ipcMain.handle('drive:save', (_e, { folder, name, content }) => {
+  try {
+    const { dir, onDrive } = relayDir(folder);
+    fs.mkdirSync(dir, { recursive: true });
+    const finalName = uniquePath(dir, cleanName(name));
+    fs.writeFileSync(path.join(dir, finalName), String(content ?? ''), 'utf8');
+    return { ok: true, name: finalName, abs: path.join(dir, finalName), rel: `${onDrive ? 'My Drive/' : 'Documents/'}Journey Relay/${cleanName(folder)}/${finalName}`, onDrive };
+  } catch (err) { return { ok: false, error: String(err.message || err) }; }
+});
+ipcMain.handle('drive:open', (_e, folder) => {
+  const { dir } = relayDir(folder || '');
+  fs.mkdirSync(dir, { recursive: true });
+  return shell.openPath(dir);
 });
 ipcMain.handle('app:info', () => ({ version: localManifest().version, platform: `${process.platform} ${process.arch}`, electron: process.versions.electron }));
 

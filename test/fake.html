@@ -14,12 +14,13 @@
 // Port 8002 = BETA  (Claude-like: no message ids, and a "N minutes ago" footer that keeps changing)
 const NAME = location.port === '8001' ? 'ALPHA' : 'BETA';
 const OTHER = NAME === 'ALPHA' ? 'BETA' : 'ALPHA';
-window.cfg = { auto: false, lag: 0, slow: false, footer: NAME === 'BETA', completeAt: 999 };
+window.cfg = { auto: false, lag: 0, slow: false, footer: NAME === 'BETA', completeAt: 999, window: 2 };
+const trim = () => { if (!cfg.window) return; for (const sel of ['.bot', '.user']) { const all = document.querySelectorAll(sel); for (let k = 0; k < all.length - cfg.window; k++) all[k].remove(); } };
 window.received = []; window.files = [];
 let n = 0, seq = 0;
 const box = document.getElementById('box'), thread = document.getElementById('thread'), stop = document.getElementById('stop');
 document.getElementById('up').addEventListener('change', async (e) => { for (const f of e.target.files) window.files.push({ name: f.name, text: await f.text() }); });
-function addUser(t) { const u = document.createElement('div'); u.className = 'msg user'; u.textContent = t; thread.appendChild(u); }
+function addUser(t) { const u = document.createElement('div'); u.className = 'msg user'; u.textContent = t; thread.appendChild(u); trim(); }
 function send() {
   const t = box.value; if (!t.trim()) return;
   window.received.push(t);
@@ -42,6 +43,7 @@ function post(text) {
   if (cfg.footer) { const f = document.createElement('div'); f.className = 'foot'; b.appendChild(f); }
   b._born = Date.now();
   thread.appendChild(b);
+  trim();
   stop.style.display = '';
   const chunk = cfg.slow ? 8 : 60, delay = cfg.slow ? 250 : 60;
   let i = 0, paused = false;

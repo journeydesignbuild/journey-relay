@@ -767,7 +767,15 @@ async function tick() {
 const endsWithEot = (t) => String(t || '').lastIndexOf('END OF TURN') >= 0;
 // The destination's reply is "new" only if its content differs from what was there before we sent AND
 // a new message element appeared (count went up or the site's message id changed).
-const isNewReplyFor = (fl, r) => !!r.key && r.key !== fl.base.hash && (r.count > fl.base.count || (!!r.id && r.id !== fl.base.id));
+// Sites keep only the last few messages loaded, so counts can't be trusted. Identity is the canonical text:
+// timestamps/UI are already stripped, so a different key means a genuinely different (new) reply.
+const isNewReplyFor = (fl, r) => !!r.key && r.key !== fl.base.hash;
+// Does the destination's latest user message look like what we sent?
+const headMatches = (e, r) => {
+  if (!r || !r.userLast || !e.out) return false;
+  const a = norm(r.userLast).slice(0, 60), b = norm(e.out).slice(0, 60);
+  return a.length >= 20 && (b.startsWith(a) || a.startsWith(b));
+};
 
 async function tickOnce() {
   const stableMs = Math.max(3, settings.stableSec || 2) * 1000;
@@ -910,6 +918,7 @@ async function verifySubmitted(e) {
     const r = await readPane(e.to);
     if (!r) continue;
     if (r.userCount >= 0 && r.userCount > e.base.userCount) return 'yes';
+    if (headMatches(e, r)) return 'yes';
     if (r.count > e.base.count || r.busy) return 'yes'; // the AI already started answering
     if (r.userCount < 0) { const left = norm(await run(p, pgInputText, a.input)); if (!left) return 'yes'; }
   }
@@ -930,7 +939,7 @@ async function reconcile(e, r) {
   if (!a) return;
   if (!r) { try { r = await readPane(e.to); } catch { return; } }
   if (!r) return;
-  if (isNewReplyFor(e, r) || r.count > e.base.count) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }
+  if (isNewReplyFor(e, r) || r.count > e.base.count || r.busy || headMatches(e, r)) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }
   if (r.userCount >= 0 && r.userCount > e.base.userCount) {
     const matches = !r.userLast || hashText(norm(r.userLast).slice(0, 120)) === e.headHash || norm(e.out || '').startsWith(norm(r.userLast).slice(0, 60));
     if (matches || !e.out) { await markSubmitted(e); note(`Checked ${label(e.to)}: the message had arrived. Not resending.`); return; }

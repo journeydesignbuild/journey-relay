@@ -116,6 +116,15 @@ module.exports = (win, app) => {
       const stale = await site(1, `window.received.filter(t => t.includes('ALPHA RESPONSE 003')).length`);
       check('4. Slow streaming reply captured complete, once; old reply not resent', got005.length === 1 && got005[0] === true && stale === 1, `mid-stream: ${midState}; 005 deliveries ${JSON.stringify(got005)}; old 003 copies ${stale}`);
 
+      // ---- 10. Site suggestions after END OF TURN ("Create a doc"…) are ignored: no hang ----
+      await js('settings.fallbackSec = 120; true');
+      const t10 = Date.now();
+      await site(1, `post(protocol('017', 'Final summary of the work.') + '\\n\\nCreate a doc\\nCreate a spreadsheet\\nSuggested next step: turn this into a project plan with milestones, owners and dates for the team.')`);
+      const ok10 = await waitFor('R.ledger.some(e => e.from === 1 && e.num === "017" && e.state === "awaiting")', 60000);
+      const secs = Math.round((Date.now() - t10) / 1000);
+      const leaked = await site(0, `window.received.filter(t => t.includes('Create a spreadsheet')).length`);
+      check('10. Text after END OF TURN ignored: relayed promptly, suggestions not forwarded', ok10 && secs < 30 && leaked === 0, `relayed after ${secs}s (fallback would be 120s); suggestion text forwarded ${leaked}x`);
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

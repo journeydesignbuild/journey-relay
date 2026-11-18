@@ -94,6 +94,10 @@
       <label class="field">Anthropic API key (for the moderator and summary)
         <input type="password" id="sApiKey" placeholder="sk-ant-..." />
       </label>
+      <label class="field">Relay password (locks your API key so it can sync to your other computers)
+        <input type="password" id="sSyncPw" placeholder="Leave blank to keep the current one" autocomplete="new-password" />
+      </label>
+      <div id="syncState" class="small muted"></div>
       <div class="grid2">
         <label class="field">Moderator model <input id="sModModel" /></label>
         <label class="field">Summary model <input id="sSumModel" /></label>
@@ -125,6 +129,19 @@
       <div class="row btns">
         <button type="button" id="cancelSettings">Cancel</button>
         <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="signin">
+    <form id="signinForm">
+      <h3>Sign in to Journey Relay</h3>
+      <p class="muted small" style="margin:0">Your settings were found in Google Drive. Enter your relay password to unlock your API key on this computer.</p>
+      <label class="field">Relay password <input type="password" id="signinPw" autocomplete="current-password" /></label>
+      <div id="signinErr" class="small warn"></div>
+      <div class="row btns">
+        <button type="button" id="signinSkip">Not now</button>
+        <button type="submit" class="primary">Sign in</button>
       </div>
     </form>
   </dialog>

@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('api', {
   driveSave: (o) => ipcRenderer.invoke('drive:save', o),
   driveOpen: (folder) => ipcRenderer.invoke('drive:open', folder),
   openBackupFiles: () => ipcRenderer.invoke('files:openBackup'),
+  syncPush: (o) => ipcRenderer.invoke('sync:push', o || {}),
+  syncPull: () => ipcRenderer.invoke('sync:pull'),
+  syncSignin: (pw) => ipcRenderer.invoke('sync:signin', pw),
   pane: (i, method, args) => ipcRenderer.invoke('pane:call', i, method, args),
   onPaneEvent: (fn) => ipcRenderer.on('pane:event', (_e, d) => fn(d))
 });

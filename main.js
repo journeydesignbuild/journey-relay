@@ -1,6 +1,7 @@
 // Journey Relay — main process
 const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView, shell } = require('electron');
 const os = require('os');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
@@ -290,7 +291,13 @@ function findDriveRoot() {
     try { fs.readdirSync(cs).filter((n) => n.startsWith('GoogleDrive-')).forEach((n) => cands.push(path.join(cs, n, 'My Drive'))); } catch {}
   }
   cands.push(path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'My Drive'), path.join(home, 'Google Drive'));
-  return cands.find((p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } }) || null;
+  const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+  if (s.driveFolder && isDir(s.driveFolder)) return s.driveFolder;
+  const found = cands.filter(isDir);
+  // A new computer: pick the drive that already has your synced relay settings, then any with relay sessions
+  return found.find((p) => fs.existsSync(path.join(p, 'Journey Relay', '_settings.json')))
+    || found.find((p) => fs.existsSync(path.join(p, 'Journey Relay', '_sessions')))
+    || found[0] || null;
 }
 const cleanName = (n) => String(n || 'file.txt').replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 120) || 'file.txt';
 function uniquePath(dir, name) {
@@ -390,6 +397,78 @@ ipcMain.handle('sessions:save', (_e, obj) => {
   return true;
 });
 ipcMain.handle('app:host', () => os.hostname());
+
+// ---------- Settings sync through Drive; API key locked with your relay password (AES-256-GCM) ----------
+const SYNC_FIELDS = ['adapters', 'names', 'framework', 'modModel', 'sumModel', 'stableSec', 'fallbackSec', 'timeoutMin', 'auto', 'updateRepo', 'urls'];
+const syncFile = () => { const r = findDriveRoot(); return r ? path.join(r, 'Journey Relay', '_settings.json') : null; };
+const deriveKey = (password, saltHex) => crypto.scryptSync(String(password), Buffer.from(saltHex, 'hex'), 32);
+function encryptJson(obj, key) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
+  return { iv: iv.toString('hex'), ct: ct.toString('base64'), tag: c.getAuthTag().toString('hex') };
+}
+function decryptJson(blob, key) {
+  const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(blob.iv, 'hex'));
+  d.setAuthTag(Buffer.from(blob.tag, 'hex'));
+  return JSON.parse(Buffer.concat([d.update(Buffer.from(blob.ct, 'base64')), d.final()]).toString('utf8'));
+}
+const readSync = () => { const f = syncFile(); if (!f) return null; try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+ipcMain.handle('sync:push', (_e, { password } = {}) => {
+  const s = loadSettings();
+  const f = syncFile();
+  if (!f) return { ok: false, error: 'Google Drive not found' };
+  const existing = readSync() || {};
+  const pub = {};
+  SYNC_FIELDS.forEach((k) => { pub[k] = s[k]; });
+  let salt = existing.salt || null, secrets = existing.secrets || null;
+  let keyHex = s.syncKey && s.syncSalt && s.syncSalt === existing.salt ? s.syncKey : null;
+  if (password) { salt = crypto.randomBytes(16).toString('hex'); keyHex = deriveKey(password, salt).toString('hex'); }
+  if (keyHex && salt) secrets = encryptJson({ apiKey: s.apiKey || '', githubToken: s.githubToken || '' }, Buffer.from(keyHex, 'hex'));
+  const out = { v: 1, updatedAt: new Date().toISOString(), from: os.hostname(), settings: pub, salt, secrets };
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f + '.tmp', JSON.stringify(out, null, 2));
+    fs.renameSync(f + '.tmp', f);
+  } catch (err) { return { ok: false, error: String(err.message || err) }; }
+  const local = { syncedAt: out.updatedAt };
+  if (keyHex) { local.syncKey = keyHex; local.syncSalt = salt; }
+  saveSettings({ ...s, ...local });
+  return { ok: true, ...local, keySynced: !!secrets, file: f };
+});
+ipcMain.handle('sync:pull', () => {
+  const d = readSync();
+  if (!d) return { found: false };
+  const s = loadSettings();
+  let applied = false;
+  if (d.settings && (!s.syncedAt || String(d.updatedAt) > String(s.syncedAt))) {
+    SYNC_FIELDS.forEach((k) => { if (d.settings[k] !== undefined) s[k] = d.settings[k]; });
+    s.syncedAt = d.updatedAt;
+    applied = true;
+  }
+  let needsSignIn = false;
+  if (d.secrets && d.salt) {
+    if (s.syncKey && s.syncSalt === d.salt) {
+      try { const sec = decryptJson(d.secrets, Buffer.from(s.syncKey, 'hex')); if (sec.apiKey) s.apiKey = sec.apiKey; if (sec.githubToken) s.githubToken = sec.githubToken; } catch { needsSignIn = true; }
+    } else needsSignIn = true;
+  }
+  saveSettings(s);
+  return { found: true, applied, needsSignIn, from: d.from, updatedAt: d.updatedAt, hasKey: !!d.secrets };
+});
+ipcMain.handle('sync:signin', (_e, password) => {
+  const d = readSync();
+  if (!d || !d.secrets || !d.salt) return { ok: false, error: 'No synced key found in Google Drive.' };
+  const key = deriveKey(password, d.salt);
+  try {
+    const sec = decryptJson(d.secrets, key);
+    const s = loadSettings();
+    if (sec.apiKey) s.apiKey = sec.apiKey;
+    if (sec.githubToken) s.githubToken = sec.githubToken;
+    s.syncKey = key.toString('hex'); s.syncSalt = d.salt;
+    saveSettings(s);
+    return { ok: true };
+  } catch { return { ok: false, error: 'Wrong password.' }; }
+});
 
 // Live status: My Drive/Journey Relay/STATUS.md, readable from a phone or by Claude through the Drive connector
 const statusByWindow = new Map();

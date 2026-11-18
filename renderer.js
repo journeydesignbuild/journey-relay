@@ -762,8 +762,9 @@ async function tick() {
   ticking = true;
   try { await tickOnce(); } finally { ticking = false; }
 }
-// A reply counts as finished only if END OF TURN is the last thing in it (allowing a few chars of site UI)
-const endsWithEot = (t) => { const k = t.lastIndexOf('END OF TURN'); return k >= 0 && t.slice(k + 11).replace(/[\uE000-\uF8FF]/g, '').trim().length <= 60; };
+// A reply is finished once it contains END OF TURN. Anything the site shows after it (timestamps, "Create a doc",
+// "Create a spreadsheet" suggestions…) is disregarded. "Still working" is judged by the site's busy signs + the re-check.
+const endsWithEot = (t) => String(t || '').lastIndexOf('END OF TURN') >= 0;
 // The destination's reply is "new" only if its content differs from what was there before we sent AND
 // a new message element appeared (count went up or the site's message id changed).
 const isNewReplyFor = (fl, r) => !!r.key && r.key !== fl.base.hash && (r.count > fl.base.count || (!!r.id && r.id !== fl.base.id));
@@ -1464,7 +1465,18 @@ async function moderatorSend(text) {
 }
 
 // ---------- Settings ----------
-async function saveSettings() { await window.api.saveSettings(settings); }
+let syncTimer = null;
+async function saveSettings() {
+  await window.api.saveSettings(settings);
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushSync, 1500);
+}
+async function pushSync(password) {
+  const r = await window.api.syncPush(password ? { password } : {});
+  if (r.ok) { Object.assign(settings, { syncedAt: r.syncedAt, ...(r.syncKey ? { syncKey: r.syncKey, syncSalt: r.syncSalt } : {}) }); }
+  else if (r.error) recordError('Settings sync: ' + r.error);
+  return r;
+}
 function openSettings() {
   $('#sApiKey').value = settings.apiKey || '';
   $('#sModModel').value = settings.modModel;
@@ -1477,6 +1489,8 @@ function openSettings() {
   $('#sFramework').value = settings.framework;
   $('#sAdapters').value = JSON.stringify(settings.adapters, null, 2);
   $('#sRepo').value = settings.updateRepo || '';
+  $('#sSyncPw').value = '';
+  $('#syncState').textContent = settings.syncKey ? `Signed in. API key syncs (locked) through Google Drive${settings.syncedAt ? ` · last synced ${new Date(settings.syncedAt).toLocaleString()}` : ''}.` : 'No relay password yet: settings sync, but the API key stays on this computer only.';
   window.api.driveList().then(async (roots) => {
     const cur = (await window.api.driveInfo()).root || '';
     const sel = $('#sDrive');
@@ -1513,7 +1527,10 @@ async function submitSettings(e) {
     updateRepo: $('#sRepo').value.trim() || settings.updateRepo,
     githubToken: $('#sToken').value.trim()
   });
-  await saveSettings();
+  await window.api.saveSettings(settings);
+  const pw = $('#sSyncPw').value;
+  const sr = await pushSync(pw || undefined);
+  if (pw && sr.ok) note('Relay password set. Your API key now syncs, locked, to your other computers.');
   panes.forEach(refreshPane);
   $('#settings').close();
   if (session) saveNow(); // write the current session into the newly chosen Drive right away
@@ -1693,6 +1710,7 @@ async function switchSession(id) {
 
 // ---------- Wire up ----------
 async function init() {
+  const sync = await window.api.syncPull();
   settings = await window.api.getSettings();
   settings.adapters = settings.adapters || {};
   settings.names = settings.names || ['', ''];
@@ -1790,6 +1808,22 @@ async function init() {
   updateControls();
   if (settings.auto !== false && !R.blocker && !R.held.length) setTimeout(() => setRelay(true, 'Relay on. Replies from either AI are copied to the other.'), 1500);
   else if (R.blocker || R.held.length) note(`Relay left off: ${R.blocker || `${R.held.length} held message(s) waiting for your decision`}. Ask the moderator what's pending.`, true);
+  if (sync.found && sync.applied && sync.from) note(`Settings synced from ${sync.from}.`);
+  if (sync.needsSignIn) {
+    setPanesVisible(false);
+    $('#signin').showModal();
+    $('#signinPw').focus();
+  }
+  $('#signinSkip').onclick = () => $('#signin').close();
+  $('#signin').addEventListener('close', () => setPanesVisible(true));
+  $('#signinForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const r = await window.api.syncSignin($('#signinPw').value);
+    if (!r.ok) { $('#signinErr').textContent = r.error; return; }
+    Object.assign(settings, await window.api.getSettings());
+    $('#signin').close();
+    note('Signed in. Your API key is ready on this computer.');
+  });
   checkUpdate(true);
   setInterval(() => checkUpdate(true), 30 * 60 * 1000);
 }

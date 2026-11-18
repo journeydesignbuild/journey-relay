@@ -462,6 +462,7 @@ async function typeAndSend(p, text) {
   const left = norm(await run(p, pgInputText, a.input));
   if (window.__dbg) console.log('[dbg] sent to ' + p.label + ' | boxes: ' + JSON.stringify(await Promise.all(panes.map((q) => run(q, pgInputText, '#box')))));
   if (left && norm(text).startsWith(left.slice(0, 40))) { p.wv.focus(); await run(p, pgFocusInput, a.input, false); await pressEnter(p.wv); }
+  if (document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)) window.api.hostFocus(); // give typing back to you
 }
 async function waitForReply(p, before, sent, abortable) {
   const a = adapterFor(p);
@@ -1183,6 +1184,8 @@ async function init() {
   $('#settingsBtn').onclick = openSettings;
   $('#settingsForm').addEventListener('submit', submitSettings);
   $('#settings').addEventListener('close', () => setPanesVisible(true));
+  // Clicking anywhere in the app's own panels takes keyboard focus back from the site panes
+  document.addEventListener('mousedown', () => window.api.hostFocus(), true);
   window.addEventListener('resize', syncPaneBounds);
   setTimeout(syncPaneBounds, 300);
   $('#cancelSettings').onclick = () => $('#settings').close();

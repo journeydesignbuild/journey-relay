@@ -167,6 +167,7 @@ const menuTemplate = [
   { role: 'viewMenu' },
   { role: 'windowMenu' }
 ];
+ipcMain.handle('host:focus', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w && !w.isDestroyed()) w.webContents.focus(); return true; });
 ipcMain.handle('window:new', () => { createWindow(true); return true; });
 
 // Embedded sites get no Node access and no preload

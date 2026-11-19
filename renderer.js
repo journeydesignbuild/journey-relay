@@ -11,7 +11,7 @@ class Stop extends Error { constructor() { super('stopped'); } }
 // ---------- Site presets (best effort; use Teach if a site changes) ----------
 const PRESETS = [
   { hosts: ['chatgpt.com', 'chat.openai.com'], name: 'ChatGPT', ai: 'CHATGPT',
-    input: '#prompt-textarea, div[aria-label="Work with ChatGPT"], div[aria-label="Ask ChatGPT"]', reply: '[data-message-author-role="assistant"], article[data-turn="assistant"], [data-testid^="conversation-turn"] [data-message-author-role="assistant"]',
+    input: '#prompt-textarea, div[aria-label="Work with ChatGPT"], div[aria-label="Ask ChatGPT"], div[aria-label*="ChatGPT" i][contenteditable="true"], form div.ProseMirror[contenteditable="true"]', reply: '[data-message-author-role="assistant"], article[data-turn="assistant"], [data-testid^="conversation-turn"] [data-message-author-role="assistant"], main article:has(.markdown) .markdown',
     send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]', user: '[data-message-author-role="user"], article[data-turn="user"]' },
   { hosts: ['claude.ai'], name: 'Claude', ai: 'CLAUDE',
     input: '[data-testid="chat-input"], div[contenteditable="true"].ProseMirror', reply: 'div[data-testid="assistant-message"], .font-claude-response, .font-claude-message',
@@ -71,7 +71,7 @@ function adapterFor(p) {
   if (t && (!pr || t.override)) {
     if (!pr) return { ...t, busy: t.busy || '', user: t.user || '', source: 'taught' };
     // Known site: read and send with the built-in setup first; your taught setup is the backup
-    return { ...t, ai: t.ai || pr.ai, reply: pr.reply, taughtReply: t.reply, send: pr.send, taughtSend: t.send, input: t.input || pr.input, busy: t.busy || pr.busy || '', user: pr.user || t.user || '', source: 'taught' };
+    return { ...t, ai: t.ai || pr.ai, reply: pr.reply, taughtReply: t.reply, send: pr.send, taughtSend: t.send, input: [t.input, pr.input].filter(Boolean).join(', '), busy: t.busy || pr.busy || '', user: pr.user || t.user || '', source: 'taught' };
   }
   return pr ? { ...pr, source: 'preset' } : null;
 }
@@ -276,6 +276,12 @@ function pgClickSend(sel) {
   if (!b) return false;
   b.click();
   return (b.tagName === 'BUTTON' || b.getAttribute('role') === 'button') ? 'button' : 'other';
+}
+function pgDiag() {
+  const n = (s2) => { try { return document.querySelectorAll(s2).length; } catch (e) { return -1; } };
+  const vals = (attr) => { const m = {}; try { document.querySelectorAll('[' + attr + ']').forEach((e) => { const v = e.getAttribute(attr).slice(0, 30); m[v] = (m[v] || 0) + 1; }); } catch (e) {} return Object.entries(m).slice(0, 8).map(([k, v]) => k + '×' + v).join(' '); };
+  const eds = [...document.querySelectorAll('[contenteditable="true"], textarea')].slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (e.getAttribute('aria-label') ? '[' + e.getAttribute('aria-label') + ']' : '') + (e.getAttribute('data-testid') ? '{' + e.getAttribute('data-testid') + '}' : '')).join(' | ');
+  return `title "${document.title.slice(0, 50)}" · main ${n('main')} · article ${n('article')} · .markdown ${n('.markdown')} · author-role: ${vals('data-message-author-role') || 'none'} · data-turn: ${vals('data-turn') || 'none'} · testids: ${vals('data-testid').slice(0, 200) || 'none'} · inputs: ${eds || 'none'}`;
 }
 function pgCheck(inSel, repSel) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -1762,6 +1768,7 @@ async function debugReport() {
         const rr = await readPane(p.i);
         const r = { input: c.input, count: rr.count, latest: rr.text };
         lines.push(`  test: input ${r.input ? 'found' : 'NOT found'} · ${r.count} replies · latest: "${short(r.latest, 200)}"`);
+        if (!r.input || !r.count) { try { lines.push('  page: ' + await run(p, pgDiag)); } catch {} }
         lines.push(`  working signal: ${rr.busy ? 'YES, ' + rr.busyWhy : 'none'}${(rr.busyIgnored || []).length ? ' · ignored: ' + rr.busyIgnored.join(', ') : ''}`);
         const parsed = parseTurn(r.latest);
         lines.push(`  latest reply format: ${parsed ? `OK (${parsed.name} ${parsed.num}${parsed.hasEnd ? ', END OF TURN' : ', no END OF TURN'})` : 'markers NOT found'}`);

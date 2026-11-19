@@ -1,6 +1,6 @@
 {
-  "version": "1.11.4",
-  "notes": "Stop buttons outside the chat (like Claude's task tracker) no longer make an AI look busy. ChatGPT replies found again after its layout change; sidebar ignored. Debug report shows why an AI reads as working.",
+  "version": "1.11.5",
+  "notes": "ChatGPT: finds the input box and replies on its newer layout; taught and built-in input both tried. Debug report shows page details when a pane reads nothing.",
   "files": [
     "main.js",
     "preload.js",

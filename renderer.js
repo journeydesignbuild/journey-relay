@@ -11,8 +11,8 @@ class Stop extends Error { constructor() { super('stopped'); } }
 // ---------- Site presets (best effort; use Teach if a site changes) ----------
 const PRESETS = [
   { hosts: ['chatgpt.com', 'chat.openai.com'], name: 'ChatGPT', ai: 'CHATGPT',
-    input: '#prompt-textarea, div[aria-label="Work with ChatGPT"]', reply: '[data-message-author-role="assistant"]',
-    send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]', user: '[data-message-author-role="user"]' },
+    input: '#prompt-textarea, div[aria-label="Work with ChatGPT"], div[aria-label="Ask ChatGPT"]', reply: '[data-message-author-role="assistant"], article[data-turn="assistant"], [data-testid^="conversation-turn"] [data-message-author-role="assistant"]',
+    send: 'button[data-testid="send-button"], #composer-submit-button', busy: 'button[data-testid="stop-button"]', user: '[data-message-author-role="user"], article[data-turn="user"]' },
   { hosts: ['claude.ai'], name: 'Claude', ai: 'CLAUDE',
     input: '[data-testid="chat-input"], div[contenteditable="true"].ProseMirror', reply: 'div[data-testid="assistant-message"], .font-claude-response, .font-claude-message',
     send: 'button[aria-label="Send message"], button[aria-label="Send Message"]', busy: '[data-is-streaming="true"], button[aria-label="Stop response"]', user: '[data-testid="user-message"]' },
@@ -99,17 +99,28 @@ function pgRead(sel, busySel, userSel) {
   const vis = (e) => e.getClientRects().length > 0;
   let els;
   try { els = [...document.querySelectorAll(sel)].filter(vis); } catch (e) { return { error: 'bad selector', count: 0, text: '', busy: false }; }
+  // Only the conversation: drop matches in the sidebar/header when some are inside <main>
+  const inMain = els.filter((e) => e.closest('main'));
+  if (inMain.length) els = inMain;
+  els = els.filter((e) => !e.closest('nav, aside, header, [role="navigation"]'));
   let last = els[els.length - 1];
   // Skip empty boxes at the end (feedback bars, placeholders) and read the last reply that has text
   const txt = (el) => (el.innerText || '').trim() || (el.textContent || '').trim(); // textContent covers replies the page hasn't drawn (off-screen)
   for (let k = els.length - 1; k >= 0; k--) { if (txt(els[k])) { last = els[k]; break; } }
-  let busy = false;
-  if (busySel) { try { busy = [...document.querySelectorAll(busySel)].some(vis); } catch (e) {} }
-  // generic signs that the AI is still working (stop buttons, streaming flags)
-  if (!busy) {
-    try {
-      busy = [...document.querySelectorAll('[data-testid="stop-button"], [data-is-streaming="true"], button[aria-label*="Stop" i], button[aria-label*="Cancel response" i]')].some(vis);
-    } catch (e) {}
+  // Busy = a stop button next to the input box, or a streaming flag on the latest reply.
+  // Stop buttons elsewhere (task trackers, side panels, voice) don't count.
+  const nearComposer = (el) => { if (el.closest('form, fieldset')) return true; let n = el; for (let d = 0; d < 6 && n; d++, n = n.parentElement) { if (n.querySelector && n.querySelector('textarea, [contenteditable="true"]')) return true; } return false; };
+  const onLatest = (el) => !!last && (last.contains(el) || el.contains(last) || (() => { let n = last; for (let d = 0; d < 5 && n; d++, n = n.parentElement) if (n === el) return true; return false; })());
+  const outside = (el) => !!el.closest('nav, aside, header, [role="navigation"], [role="dialog"]');
+  const describe = (el) => `${el.tagName.toLowerCase()}${el.getAttribute('data-testid') ? '[data-testid=' + el.getAttribute('data-testid') + ']' : ''}${el.getAttribute('aria-label') ? '[aria-label=' + el.getAttribute('aria-label') + ']' : ''}${el.getAttribute('data-is-streaming') ? '[streaming]' : ''}`;
+  let busy = false, busyWhy = '', busyIgnored = [];
+  const q = (s2) => { try { return [...document.querySelectorAll(s2)].filter(vis); } catch (e) { return []; } };
+  const cands = q([busySel, '[data-testid="stop-button"], [data-is-streaming="true"], button[aria-label*="Stop" i], button[aria-label*="Cancel response" i]'].filter(Boolean).join(', '));
+  for (const el of cands) {
+    const streaming = el.getAttribute('data-is-streaming') === 'true';
+    const counts = !outside(el) && (streaming ? (onLatest(el) || !last) : (nearComposer(el) || onLatest(el)));
+    if (counts) { busy = true; busyWhy = describe(el); break; }
+    if (busyIgnored.length < 3) busyIgnored.push(describe(el));
   }
   const idOf = (el) => { for (let n = el, d = 0; n && n.getAttribute && d < 4; n = n.parentElement, d++) { const v = n.getAttribute('data-message-id') || n.getAttribute('data-turn-id'); if (v) return v; } return ''; };
   let userCount = -1, userLast = '';
@@ -121,7 +132,7 @@ function pgRead(sel, busySel, userSel) {
       userLast = lu ? (lu.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300) : '';
     } catch (e) {}
   }
-  return { count: els.length, text: last ? txt(last) : '', busy, id: last ? idOf(last) : '', userCount, userLast };
+  return { count: els.length, text: last ? txt(last) : '', busy, busyWhy, busyIgnored, id: last ? idOf(last) : '', userCount, userLast };
 }
 function pgFocusInput(sel, clear) {
   const vis = (e) => e.getClientRects().length > 0;
@@ -1262,7 +1273,7 @@ const MOD_TOOLS = [
     input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['on', 'off'] } }, required: ['action'] } },
   { name: 'relay_latest',
     description: "Pick up a conversation: copy the latest reply currently in one pane over to the other AI right now (with the relay rules if that AI hasn't had them). Refuses if that exact message was already delivered, unless allow_repeat is true (only when Justin explicitly asks to resend). Checks first that the source AI has finished working.",
-    input_schema: { type: 'object', properties: { from_pane: { type: 'integer', enum: [1, 2] }, allow_repeat: { type: 'boolean' }, cancel_pending: { type: 'boolean' } }, required: ['from_pane'] } },
+    input_schema: { type: 'object', properties: { from_pane: { type: 'integer', enum: [1, 2] }, allow_repeat: { type: 'boolean' }, cancel_pending: { type: 'boolean' }, justin_says_done: { type: 'boolean', description: 'Only when Justin has looked and says that AI is finished, but it still reads as working.' } }, required: ['from_pane'] } },
   { name: 'delivery_status', description: 'The delivery ledger: what is in flight (queued, uncertain, awaiting a reply), held messages, and the last few deliveries with times. Use when Justin asks what was delivered, or when the relay is blocked.',
     input_schema: { type: 'object', properties: {} } },
   { name: 'resolve_delivery', description: "Resolve a blocked or uncertain delivery, or a held message. mark_arrived (Justin confirms the destination got it), resend (only if it really didn't arrive; needs his OK), cancel (drop the in-flight delivery), send_held / drop_held (index from delivery_status).",
@@ -1299,7 +1310,7 @@ async function paneState(i) {
   await sleep(2000);
   const r2 = await readPane(i);
   const changing = msgKey(r1.text) !== msgKey(r2.text) || r1.count !== r2.count;
-  return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_handled: knownHas(i, msgKey(r2.text)) };
+  return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, busy_because: r2.busyWhy || undefined, ignored_stop_buttons: (r2.busyIgnored || []).length ? r2.busyIgnored : undefined, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_handled: knownHas(i, msgKey(r2.text)) };
 }
 function modSystem() {
   const openQ = questions.filter((q) => !q.answered);
@@ -1391,7 +1402,7 @@ async function runTool(name, x) {
       const fl = inflight();
       if (fl && ACTIVE.includes(fl.state) && !x.cancel_pending) return { error: `${label(fl.from)} RESPONSE ${fl.num || '?'} → ${label(fl.to)} is still ${fl.state}. Wait for it, or call again with cancel_pending=true if Justin says so.` };
       const st = await paneState(from);
-      if (st.working) return { error: `${label(from)} (${aiName(from)}) is still working. Wait until it's done.`, state: st };
+      if (st.working && !x.justin_says_done) return { error: `${label(from)} (${aiName(from)}) looks like it's still working (${st.busy_because || 'text still changing'}). Wait, or if Justin looked and says it's finished, call again with justin_says_done=true.`, state: st };
       const text = await readLatest(from);
       if (!text) return { error: `${label(from)} has no reply on screen.` };
       const key = msgKey(text);
@@ -1747,8 +1758,11 @@ async function debugReport() {
     if (a) {
       lines.push(`  selectors: input=${a.input} | reply=${a.reply} | send=${a.send || '(Enter)'} | busy=${a.busy || '-'}`);
       try {
-        const r = await run(p, pgCheck, a.input, a.reply);
+        const c = await run(p, pgCheck, a.input, a.reply);
+        const rr = await readPane(p.i);
+        const r = { input: c.input, count: rr.count, latest: rr.text };
         lines.push(`  test: input ${r.input ? 'found' : 'NOT found'} · ${r.count} replies · latest: "${short(r.latest, 200)}"`);
+        lines.push(`  working signal: ${rr.busy ? 'YES, ' + rr.busyWhy : 'none'}${(rr.busyIgnored || []).length ? ' · ignored: ' + rr.busyIgnored.join(', ') : ''}`);
         const parsed = parseTurn(r.latest);
         lines.push(`  latest reply format: ${parsed ? `OK (${parsed.name} ${parsed.num}${parsed.hasEnd ? ', END OF TURN' : ', no END OF TURN'})` : 'markers NOT found'}`);
       } catch (e) { lines.push('  test failed: ' + e.message); }

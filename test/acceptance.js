@@ -194,6 +194,12 @@ module.exports = (win, app) => {
       await js(`window.api.driveSet(${JSON.stringify('')})`);
       check('17. Drive choice survives a stale window saving settings', d17 === '/tmp/fakedrive2/My Drive', `before ${d0}; after stale save ${d17}`);
 
+      // ---- 18. A Stop button outside the chat (task tracker) doesn't make the AI look busy ----
+      await site(1, 'trackerStop(true); true');
+      const r18 = await js(`run(panes[1], pgRead, '.bot', '#stop', '.user')`);
+      await site(1, 'trackerStop(false); true');
+      check('18. Stop button in a header/task tracker is ignored', r18.busy === false && (r18.busyIgnored || []).length > 0, JSON.stringify({ busy: r18.busy, why: r18.busyWhy, ignored: r18.busyIgnored }));
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

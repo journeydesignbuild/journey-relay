@@ -1,6 +1,6 @@
 {
-  "version": "1.11.3",
-  "notes": "Messages get sent even when a taught send button does nothing. Built-in ChatGPT/Claude readers come first. Your Google Drive choice sticks (another relay window could undo it before), and the old drive is marked so no computer goes back to it.",
+  "version": "1.11.4",
+  "notes": "Stop buttons outside the chat (like Claude's task tracker) no longer make an AI look busy. ChatGPT replies found again after its layout change; sidebar ignored. Debug report shows why an AI reads as working.",
   "files": [
     "main.js",
     "preload.js",

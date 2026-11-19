@@ -74,6 +74,7 @@ setInterval(() => document.querySelectorAll('.bot .foot').forEach((f) => { f.tex
 document.getElementById('send').onclick = send;
 box.addEventListener('input', () => { if (cfg.chipOver && box.value.length > cfg.chipOver) makeChip(box.value); });
 window.oldChip = () => { const u = document.createElement('div'); u.className = 'msg user'; const c = document.createElement('div'); c.setAttribute('data-testid', 'attachment-chip'); c.textContent = 'Pasted text'; u.appendChild(c); thread.appendChild(u); };
+window.trackerStop = (on) => { let h = document.getElementById('hdr'); if (!h) { h = document.createElement('header'); h.id = 'hdr'; h.innerHTML = '<span>Step 18 of 51</span><button aria-label="Stop task">x</button>'; document.body.prepend(h); } h.style.display = on ? '' : 'none'; };
 window.postEmpty = () => { const b = document.createElement('div'); b.className = 'msg bot'; thread.appendChild(b); };
 box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
 </script>

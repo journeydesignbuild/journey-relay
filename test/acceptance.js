@@ -253,6 +253,20 @@ module.exports = (win, app) => {
       await js('pendingApproval && pendingApproval(false); true');
       check('21. Approval card fits text, capped at the moderator height, scrolls', r21.shortH < 120 && r21.longH <= r21.chatH && r21.scrolls, JSON.stringify(r21));
 
+      // ---- 22. A reply to a moderator message that asks the other AI for something is relayed ----
+      await js('R.inflight = null; R.held = []; R.blocker = ""; R.waitingOn = null; if (!R.on) setRelay(true); true'); await sleep(2500);
+      const b22 = await recv(1);
+      await js('R.sideChat[0] = true; true');
+      await site(0, `post(protocol('090', 'Found the Mel invoice.', { request: 'Please update the tracker with this invoice.' }))`);
+      const ok22 = await waitFor(`window.__b22 = true`, 100) && await (async () => { const t0 = Date.now(); while (Date.now() - t0 < 40000) { if ((await recv(1)) > b22) return true; await sleep(500); } return false; })();
+      // and one that asks nothing is not
+      const b22b = await recv(1);
+      await js('R.inflight = null; R.sideChat[0] = true; if (!R.on) setRelay(true); true'); await sleep(2500);
+      await site(0, `post(protocol('091', 'Here are the links you asked for.', { request: 'NONE' }))`);
+      await sleep(12000);
+      const b22c = await recv(1);
+      check('22. Side reply with a request is relayed; one with REQUESTS: NONE is not', ok22 && b22c === b22b, `relayed=${ok22}; NONE case BETA ${b22b}→${b22c}`);
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

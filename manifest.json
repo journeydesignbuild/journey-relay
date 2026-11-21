@@ -1,6 +1,6 @@
 {
-  "version": "1.12.1",
-  "notes": "Questions card opens to about half the moderator area and scrolls.",
+  "version": "1.12.2",
+  "notes": "Replies to the moderator's messages that ask the other AI for something are relayed (they used to stall the relay). Questions card opens to half the moderator area.",
   "files": [
     "main.js",
     "preload.js",

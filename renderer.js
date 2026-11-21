@@ -947,7 +947,18 @@ async function route(i, text, key, opts = {}) {
   try {
     const parsed = parseTurn(text);
     addLog({ who: label(i), text, kind: 'reply', turn: R.turn, num: parsed ? parsed.num : '' });
-    if (R.sideChat[i] && !opts.force) { R.sideChat[i] = false; note(`${label(i)} answered a side message. Not forwarded.`); return; }
+    if (R.sideChat[i] && !opts.force) {
+      R.sideChat[i] = false;
+      // A real relay turn (markers + something asked of the other AI) goes on as normal, even if it answers a moderator message
+      const realTurn = parsed && parsed.hasRequests && !isNone(parsed.requests);
+      if (!realTurn) {
+        if (parsed && parsed.userRequest && !isNone(parsed.userRequest)) addQuestion(i, parsed.num, parsed.userRequest);
+        note(`${label(i)} answered the moderator's message${parsed && parsed.num ? ` (RESPONSE ${parsed.num})` : ''}. It asks nothing of ${aiName(1 - i)}, so it wasn't forwarded.`);
+        if (!inflight()) setPhase('Idle: nothing to forward. Tell the moderator what\'s next.');
+        return;
+      }
+      note(`${label(i)} answered the moderator's message with a request for ${aiName(1 - i)}, so it's being relayed.`);
+    }
     if (!parsed && !opts.force) { note(`${label(i)} replied without relay markers, so it was treated as a side conversation and not forwarded. Ask the moderator to send it if you want it relayed.`); return; }
     const p = parsed || { name: aiName(i), num: '', payload: text.trim(), files: [], response: text, requests: '', userRequest: '', complete: false, hasEnd: false };
     // Same message already delivered from this pane? (identity = canonical content, not response number or commit)
@@ -1358,7 +1369,7 @@ const MOD_TOOLS = [
   { name: 'read_pane', description: 'Read the latest reply currently shown in a pane.',
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] } }, required: ['pane'] } },
   { name: 'send_to_pane',
-    description: "Type your own separate message into a pane and send it (not part of the word-for-word relay). Waits until that AI is idle. Its reply is then handled like any other reply.",
+    description: "Type your own separate message into a pane and send it (not part of the word-for-word relay). Waits until that AI is idle. If its reply asks something of the other AI (REQUESTS not NONE), the relay forwards it like any turn; otherwise it stays put.",
     input_schema: { type: 'object', properties: { pane: { type: 'integer', enum: [1, 2] }, text: { type: 'string' } }, required: ['pane', 'text'] } },
   { name: 'preapprove',
     description: "Save a standing OK from Justin for a next step (e.g. \"if Claude asks to release PR #12, yes\"). When an AI later pauses to ask him something this clearly covers, you send it to that AI without another approval card and the relay continues. Each pre-approval is used once. Use action=list to show them, clear to remove one (id) or all.",
@@ -1402,7 +1413,7 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - If Justin OKs a step ahead of time ("if it asks to release, go ahead"), save it with preapprove. When the relay pauses because an AI is waiting on him and a pre-approval clearly covers that question, call answer_questions with use_preapproval, to = that AI, deliver_now=true, then relay_control on. If it doesn't clearly cover it, don't stretch it: tell Justin in one line and wait.
 - To pick up a conversation, use relay_latest from the side that spoke last. It refuses messages that were already delivered: never force a repeat unless Justin explicitly asks.
 - If the relay is blocked, explain the blocker in one or two plain sentences and ask Justin which single message should go next. Use delivery_status and resolve_delivery. Never replay a pile of held or duplicate messages.
-- Replies to your own side messages (send_to_pane) are not forwarded automatically.
+- Replies to your own messages (send_to_pane) are forwarded only if they ask something of the other AI; otherwise they stay put.
 - Justin keeps a Questions card above this chat: it shows open questions, marks the ones the relay is waiting on as NEEDED, and hides answered or dropped ones. Keep it accurate: when he answers, mark the question ids in answer_questions; when he says "later" or "skip", or a question is clearly out of date or repeated, use update_questions.
 - Long messages may show up on a site as an attachment chip. To see what was sent, use read_sent.
 - Before sending anything or saying an AI is done, call check_panes. Never send to an AI that is still working, even if it already wrote END OF TURN.
@@ -1543,7 +1554,7 @@ async function runTool(name, x) {
       addLog({ who: 'Moderator', to: p.label, text: ok.text, kind: 'moderator' });
       R.sideChat[p.i] = true; // its answer is a side conversation: not forwarded unless asked
       await sendOnly(p.i, ok.text, [], 120000);
-      return { sent: true, note: 'Its reply is treated as a side conversation and is not forwarded unless Justin asks (relay_latest).' };
+      return { sent: true, note: 'If its reply asks something of the other AI, the relay forwards it. Otherwise it stays put; use relay_latest if Justin wants it sent.' };
     }
     case 'preapprove': {
       if (x.action === 'list') return { preapproved: R.preapproved };

@@ -1,6 +1,6 @@
 {
-  "version": "1.13.0",
-  "notes": "Phone remote (desktop side): turn it on in Settings to show your relays on your phone and take messages and approvals from it, through Google Drive.",
+  "version": "1.13.1",
+  "notes": "Phone remote: turn it on in Settings (one switch covers every open window) to see your relays on your phone and answer from it, through Google Drive.",
   "files": [
     "main.js",
     "preload.js",

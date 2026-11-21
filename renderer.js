@@ -1196,7 +1196,7 @@ function pushStatus() {
       questions: openQ.map((q) => `Q${q.id} (${q.ai}): ${short(q.text, 140)}`).join(' | '),
       summary: short(summaryText, 400),
       delivery: deliveryText().text,
-      remote: settings && settings.remote ? remoteSnapshot() : undefined,
+      remote: remoteSnapshot(), // the PC writes it to Drive only when Phone remote is on (any window's switch)
       last: lastNote ? `${short(lastNote.text, 120)} (${new Date().toLocaleTimeString()})` : ''
     });
   }, 1500);
@@ -1794,7 +1794,7 @@ async function moderatorSend(text, opts = {}) {
 
 // ---------- Phone remote: commands arriving through Google Drive ----------
 function handleRemote(cmd) {
-  if (!settings.remote || !cmd) return;
+  if (!cmd) return; // the PC only passes commands on when Phone remote is on
   const ack = (ok, note2) => { remoteAcks.push({ file: cmd.file, at: nowIso(), type: cmd.type, ok, note: note2 || '' }); if (remoteAcks.length > 20) remoteAcks.shift(); pushStatus(); };
   switch (cmd.type) {
     case 'message': {

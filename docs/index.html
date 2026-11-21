@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Relay">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<title>Journey Relay remote</title>
+<style>
+:root { --bg:#0F1115; --panel:#15181D; --line:#262A31; --line2:#2E333B; --text:#E6E8EB; --muted:#8E949E; --orange:#F08A3C; --green:#5CC97A; --ai0:#8CC8FF; --ai1:#D97757; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, Inter, "Segoe UI", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+button, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.hidden { display: none !important; }
+.screen { min-height: 100%; display: flex; flex-direction: column; }
+#app { height: 100%; }
+#signin { justify-content: space-between; padding: calc(60px + env(safe-area-inset-top)) 28px calc(36px + env(safe-area-inset-bottom)); }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 60px; text-align: center; }
+.logo { width: 64px; height: 64px; border-radius: 16px; background: var(--orange); display: flex; align-items: center; justify-content: center; }
+.brand h1 { margin: 0; font-size: 28px; }
+.brand p { margin: 0; color: #9AA1AB; }
+.gbtn { height: 52px; border-radius: 12px; border: none; background: #fff; color: #1F2328; font-weight: 600; font-size: 16px; width: 100%; }
+.fine { color: #7E8692; font-size: 13px; text-align: center; margin: 12px 0 0; }
+.err { color: #F2A0A0; font-size: 14px; text-align: center; margin: 10px 0 0; }
+header.top { padding: calc(14px + env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; background: var(--bg); position: sticky; top: 0; z-index: 5; }
+header.top h1 { margin: 0; font-size: 24px; flex: 1; }
+.pc { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.sub { color: var(--muted); font-size: 13px; padding: 8px 16px 0; }
+#list main { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.wcard { text-align: left; width: 100%; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.wcard.need { border-color: #7A3B1C; background: #1A1411; }
+.wcard.closed { opacity: .55; }
+.wrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wname { font-weight: 700; font-size: 17px; }
+.pill { padding: 3px 9px; border-radius: 999px; font-weight: 700; font-size: 12px; white-space: nowrap; }
+.pill.need { background: var(--orange); color: #1A1205; }
+.pill.open { background: #3D3218; color: #F2CF7A; }
+.pill.none { background: #262A31; color: #AEB4BD; }
+.wstate { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.wline { color: #9AA1AB; font-size: 14px; }
+.empty { color: var(--muted); text-align: center; padding: 40px 20px; }
+#win { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+.wbody { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+#win header.top, #win .status, form.say { flex-shrink: 0; }
+#win header.top { padding-left: 6px; }
+.back { width: 44px; height: 44px; border: none; background: none; color: #C9CED6; display: flex; align-items: center; justify-content: center; }
+.wtitle { flex: 1; min-width: 0; }
+.wtitle .n { font-weight: 700; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtitle .s { font-size: 13px; font-weight: 600; }
+.go { height: 44px; padding: 0 16px; border-radius: 10px; border: none; background: var(--orange); color: #1A1205; font-weight: 700; }
+.go.stop { background: #2A1717; color: #F2A0A0; border: 1px solid #5A2A2A; }
+.go:disabled { opacity: .4; }
+.status { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.status .t { font-weight: 700; }
+.status .d { font-size: 13px; }
+.status.busy, .status.waiting { background: #2A1F14; border-color: #5A3A20; } .status.busy .t, .status.waiting .t { color: #FFD9BC; } .status.busy .d, .status.waiting .d { color: #C7A58A; }
+.status.blocked, .status.offline { background: #2A1717; border-color: #5A2A2A; } .status.blocked .t, .status.offline .t { color: #F7B7B7; } .status.blocked .d, .status.offline .d { color: #D49A9A; }
+.status.safe { background: #13241A; border-color: #23402D; } .status.safe .t { color: #8FD19E; } .status.safe .d { color: #7FA88A; }
+.status.off { background: var(--panel); } .status.off .d { color: var(--muted); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(240,138,60,.7) } 70% { box-shadow: 0 0 0 8px rgba(240,138,60,0) } 100% { box-shadow: 0 0 0 0 rgba(240,138,60,0) } }
+.pulse { animation: pulse 1.6s infinite; }
+.qcard { margin: 10px 10px 0; border-radius: 12px; border: 1px solid var(--line2); background: var(--panel); overflow: hidden; flex-shrink: 0; }
+.qcard.need { border-color: #7A3B1C; background: #1A1411; }
+.qbar { width: 100%; display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: none; background: none; text-align: left; }
+.qcard.need .qbar { background: #2A1810; color: #FFE2CC; }
+.qbar .tt { flex: 1; } .qbar .tt b { display: block; } .qbar .tt span { display: block; font-size: 12.5px; color: var(--muted); }
+.qcard.need .qbar .tt span { color: #C7A58A; }
+.qlist { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #2A2F37; }
+.qitem { padding: 9px 10px; border-radius: 9px; background: #1C1F25; border: 1px solid #2A2F37; }
+.qitem.need { background: #2A1810; border-color: #7A3B1C; }
+.qh { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 3px; }
+.tag { padding: 1px 7px; border-radius: 999px; font-weight: 700; font-size: 10.5px; }
+.tag.need { background: var(--orange); color: #1A1205; } .tag.open { background: #3D3218; color: #F2CF7A; } .tag.later { background: #262A31; color: #AEB4BD; }
+.ai0 { color: var(--ai0); font-weight: 600; } .ai1 { color: var(--ai1); font-weight: 600; }
+.qitem .b { white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.qitem.full .b { display: block; }
+#chat { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.m { max-width: 92%; white-space: pre-wrap; word-wrap: break-word; }
+.m.you { align-self: flex-end; max-width: 82%; padding: 10px 12px; border-radius: 14px; background: #2A2F37; }
+.m.you.pending { opacity: .7; }
+.m.sys { align-self: center; color: var(--muted); font-size: 12.5px; text-align: center; }
+.m.q { padding: 9px 11px; border-radius: 10px; background: #2A1F14; border: 1px solid #5A3A20; color: #F6D5B8; }
+.m .ts { display: block; color: #6E7580; font-size: 11px; margin-top: 2px; }
+.ap { border-radius: 12px; border: 1px solid var(--orange); background: #1E1813; padding: 12px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.ap .h { color: #F2A766; font-weight: 700; font-size: 13px; }
+.ap textarea { width: 100%; min-height: 80px; resize: none; padding: 9px 10px; border-radius: 8px; border: 1px solid #7A4A26; background: #140F0B; color: #F3E6DA; font-size: 16px; }
+.ap .row { display: flex; gap: 8px; }
+.ap .row button { height: 44px; border-radius: 10px; border: 1px solid var(--line2); background: #1C2026; padding: 0 14px; }
+.ap .row .ok { flex: 1; background: var(--orange); color: #1A1205; border: none; font-weight: 700; }
+form.say { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #111418; }
+form.say textarea { flex: 1; min-width: 0; resize: none; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line2); background: var(--bg); max-height: 140px; font-size: 16px; }
+form.say button { height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--orange); color: #1A1205; font-weight: 700; }
+.toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: #2A2F37; padding: 8px 14px; border-radius: 10px; font-size: 13px; z-index: 50; }
+@media (min-width: 760px) { #list main, #win .wbody > * { max-width: 760px; width: 100%; margin-left: auto; margin-right: auto; } #win .qcard { width: calc(100% - 20px); } }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <section id="signin" class="screen hidden">
+    <div class="brand">
+      <div class="logo"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#1A1205" stroke-width="2.2" aria-hidden="true"><path d="M4 7h12l-3-3"></path><path d="M20 17H8l3 3"></path></svg></div>
+      <h1>Journey Relay</h1>
+      <p>Keep your relays going from anywhere. Your PC does the work; this is the remote.</p>
+    </div>
+    <div>
+      <button id="gbtn" class="gbtn">Sign in with Google</button>
+      <p id="signErr" class="err hidden"></p>
+      <p class="fine">Journey accounts only.<br>Works on phone, tablet or any computer.</p>
+    </div>
+  </section>
+
+  <section id="list" class="screen hidden">
+    <header class="top"><h1>Relays</h1><span id="pcState" class="pc"></span></header>
+    <div id="pcSub" class="sub"></div>
+    <main id="wins"></main>
+  </section>
+
+  <section id="win" class="screen hidden">
+    <div class="wbody">
+      <header class="top">
+        <button class="back" id="back" aria-label="Back to all relays"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg></button>
+        <div class="wtitle"><div class="n" id="wName"></div><div class="s" id="wSub"></div></div>
+        <button class="go" id="goBtn">Start</button>
+      </header>
+      <div id="status" class="status" role="status"><span class="dot" id="sDot"></span><div style="flex:1;min-width:0"><div class="t" id="sTitle"></div><div class="d" id="sDetail"></div></div><span id="sTime" style="color:#8E949E;font-size:12px"></span></div>
+      <section id="qcard" class="qcard hidden" aria-label="Questions">
+        <button class="qbar" id="qbar" aria-expanded="false"><span class="tt"><b id="qTitle"></b><span id="qSub"></span></span><span id="qBadge" class="pill need hidden"></span><svg id="qChev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8E949E" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        <div id="qlist" class="qlist hidden"></div>
+      </section>
+      <div id="chat" aria-live="polite"></div>
+      <form class="say" id="sayForm"><textarea id="say" rows="1" placeholder="Message the moderator…" aria-label="Message the moderator"></textarea><button type="submit">Send</button></form>
+    </div>
+  </section>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+// ---------- Config ----------
+const ALLOWED_DOMAIN = 'journey.la'; // Google Workspace domain allowed to sign in
+const DEFAULT_CLIENT_ID = '559192578001-u1tc16q11irlsftkclffqorrk3n3dvj0.apps.googleusercontent.com';
+const params = new URLSearchParams(location.search);
+if (params.get('client')) localStorage.setItem('jr_client', params.get('client'));
+const CLIENT_ID = localStorage.getItem('jr_client') || DEFAULT_CLIENT_ID;
+const SCOPES = 'https://www.googleapis.com/auth/drive openid email';
+const MOCK = params.has('mock');
+const OFFLINE_AFTER = 120000; // PC heartbeat older than this = offline
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const hm = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+const ago = (iso) => { if (!iso) return ''; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000); return s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; };
+const aiLabel = (n) => n === 'CLAUDE' ? 'Claude' : n === 'CHATGPT' ? 'ChatGPT' : (n || '');
+const cleanQ = (t) => String(t || '').replace(/^\s*Justin[,:]\s*/i, '');
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.remove('hidden'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add('hidden'), 2600); }
+function show(id) { ['signin', 'list', 'win'].forEach((x) => $('#' + x).classList.toggle('hidden', x !== id)); }
+
+// ---------- Data: Google Drive (or mock) ----------
+let token = null, tokenExp = 0, tokenClient = null;
+const ids = {};
+const store = { pc: null, wins: {} }; // wins[id] = snapshot written by the PC
+const pending = []; // messages sent from here, not yet confirmed by the PC: {file, win, text, at}
+
+async function gfetch(url, opts = {}) {
+  if (!token || Date.now() > tokenExp - 60000) throw new Error('signin');
+  const r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + token } });
+  if (r.status === 401) { token = null; throw new Error('signin'); }
+  if (!r.ok) throw new Error('Drive error ' + r.status);
+  return r;
+}
+async function findFolder(name, parent) {
+  const q = encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${parent}' in parents`);
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=20`)).json();
+  return j.files || [];
+}
+async function locate() {
+  if (ids.remote) return;
+  for (const f of await findFolder('Journey Relay', 'root')) {
+    const r = await findFolder('_remote', f.id);
+    if (r.length) { ids.remote = r[0].id; const ib = await findFolder('inbox', r[0].id); ids.inbox = ib[0] && ib[0].id; return; }
+  }
+  throw new Error('noremote');
+}
+const modTimes = {};
+async function refreshDrive() {
+  await locate();
+  const q = encodeURIComponent(`'${ids.remote}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`);
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&pageSize=100`)).json();
+  for (const f of j.files || []) {
+    if (!/^win-.*\.json$|^pc\.json$/.test(f.name) || modTimes[f.id] === f.modifiedTime) continue;
+    try {
+      const data = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json();
+      modTimes[f.id] = f.modifiedTime;
+      if (f.name === 'pc.json') store.pc = data; else if (data && data.id) store.wins[data.id] = data;
+    } catch (e) { if (e.message === 'signin') throw e; }
+  }
+}
+async function sendDrive(cmd) {
+  await locate();
+  if (!ids.inbox) { const ib = await findFolder('inbox', ids.remote); ids.inbox = ib[0] && ib[0].id; if (!ids.inbox) throw new Error('no inbox folder yet'); }
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`;
+  const boundary = 'jr' + Math.random().toString(36).slice(2);
+  const meta = JSON.stringify({ name, parents: [ids.inbox], mimeType: 'application/json' });
+  const data = JSON.stringify({ ...cmd, at: new Date().toISOString() });
+  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${data}\r\n--${boundary}--`;
+  await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
+  return name;
+}
+
+// Sample data so the page can be checked without Google: add ?mock to the address
+function mockInit() {
+  const now = Date.now(), iso = (m) => new Date(now - m * 60000).toISOString();
+  store.pc = { host: 'MSI', at: iso(0), windows: 3 };
+  store.wins = {
+    posey: { id: 'posey', name: 'Posey Estimate Audit', updated: iso(0), relay: false, turn: '', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'waiting', title: 'Waiting for your answers', detail: '2 needed to continue' }, delivery: 'Last: AI 1 R003 → AI 2 · delivered 5:37 PM',
+      questions: [{ id: 24, from: 1, ai: 'CLAUDE', text: 'Justin: millwork, does Journey build it or Maruta Makes?', at: iso(30), needed: true }, { id: 25, from: 1, ai: 'CLAUDE', text: 'Justin: do the fence, bench and water feature ($76,621) count inside the $180k landscape allowance?', at: iso(30), needed: true }, { id: 7, from: 1, ai: 'CLAUDE', text: 'Which of the six email drafts are approved?', at: iso(900) }],
+      chat: [{ kind: 'sys', text: 'Passed AI 1 → AI 2.', t: iso(40) }, { kind: 'q', text: 'Q24 · CLAUDE asks:\nMillwork: does Journey build it, or Maruta Makes?', t: iso(30) }, { kind: 'ai', text: 'Claude finished the audit review. The relay is paused until you answer Q-24 and Q-25.', t: iso(29) }],
+      approval: { id: 'apx', title: 'Your answer → AI 2 (Claude)', text: 'Q-24: Maruta Makes builds the millwork.' }, acks: [] },
+    dev: { id: 'dev', name: 'JDB OS DEV 01', updated: iso(0), relay: true, turn: '6 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'busy', title: 'Busy · Claude is working', detail: 'Waiting for AI 2', since: iso(3) }, delivery: 'AI 1 R083 → AI 2 · waiting for reply', questions: [{ id: 13, from: 1, ai: 'CLAUDE', text: 'PR #20 is live. Last step is a quick read-only check.', at: iso(60) }], chat: [], approval: null, acks: [] },
+    sand: { id: 'sand', name: 'Sandbox Agents Cleanup', updated: iso(0), relay: true, turn: '2 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'safe', title: 'Safe · nothing running', detail: 'Relay on, waiting for the next reply' }, delivery: 'Last: AI 2 R042 → AI 1', questions: [], chat: [], approval: null, acks: [] }
+  };
+}
+const api = MOCK ? {
+  refresh: async () => {},
+  send: async (cmd) => { const n = 'mock-' + Date.now(); setTimeout(() => { const w = store.wins[cmd.win]; if (!w) return; w.acks.push({ file: n, at: new Date().toISOString(), type: cmd.type, ok: true }); if (cmd.type === 'message') w.chat.push({ kind: 'you', text: 'From phone: ' + cmd.text, t: new Date().toISOString() }); if (cmd.type !== 'message') w.approval = null; if (cmd.type === 'relay') w.relay = cmd.on; render(); }, 1200); return n; }
+} : { refresh: refreshDrive, send: sendDrive };
+
+// ---------- Sign in ----------
+function signedIn(tk, exp) { token = tk; tokenExp = exp; localStorage.setItem('jr_tok', JSON.stringify({ tk, exp })); }
+function restoreToken() { try { const j = JSON.parse(localStorage.getItem('jr_tok') || 'null'); if (j && j.exp > Date.now() + 60000) { token = j.tk; tokenExp = j.exp; return true; } } catch {} return false; }
+async function checkAccount() {
+  const u = await (await gfetch('https://www.googleapis.com/oauth2/v3/userinfo')).json();
+  const em = String(u.email || '').toLowerCase();
+  if (u.hd !== ALLOWED_DOMAIN || !em.endsWith('@' + ALLOWED_DOMAIN)) { token = null; localStorage.removeItem('jr_tok'); throw new Error('That account isn\'t a Journey account. Sign in with your Journey Google account.'); }
+  localStorage.setItem('jr_hint', em);
+}
+function initGoogle() {
+  if (!window.google || !google.accounts || !google.accounts.oauth2) return false;
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID, scope: SCOPES, hd: ALLOWED_DOMAIN, hint: localStorage.getItem('jr_hint') || undefined,
+    callback: async (r) => {
+      if (r.error) { signErr(r.error_description || r.error); return; }
+      signedIn(r.access_token, Date.now() + (r.expires_in || 3600) * 1000);
+      try { await checkAccount(); start(); } catch (e) { signErr(e.message); show('signin'); }
+    }
+  });
+  return true;
+}
+function signErr(t) { const e = $('#signErr'); e.textContent = t; e.classList.remove('hidden'); }
+$('#gbtn').onclick = () => {
+  if (CLIENT_ID.startsWith('PASTE_')) { signErr('The Google sign-in key is not set up yet.'); return; }
+  if (!tokenClient && !initGoogle()) { signErr('Google sign-in is still loading. Try again in a second.'); return; }
+  tokenClient.requestAccessToken({ prompt: localStorage.getItem('jr_hint') ? '' : 'consent' });
+};
+
+// ---------- Screens ----------
+let current = null, qOpen = false;
+function pcOnline() { return !!store.pc && Date.now() - new Date(store.pc.at) < OFFLINE_AFTER; }
+function stateColor(k) { return { busy: '#F08A3C', waiting: '#F08A3C', blocked: '#E5534B', offline: '#E5534B', safe: '#5CC97A', off: '#6E7580' }[k] || '#6E7580'; }
+function render() { if (current) renderWin(); else renderList(); }
+function renderList() {
+  const on = pcOnline();
+  $('#pcState').innerHTML = `<span class="dot" style="background:${on ? '#5CC97A' : '#E5534B'}"></span><span style="color:${on ? '#8FD19E' : '#F7B7B7'}">${on ? 'PC online' : 'PC offline'}</span>`;
+  $('#pcSub').textContent = store.pc ? `${store.pc.host || 'PC'} · ${on ? 'updated' : 'last seen'} ${hm(store.pc.at)}` : 'Looking for your PC…';
+  const need = (w) => (w.questions || []).filter((q) => q.needed).length;
+  const wins = Object.values(store.wins).sort((a, b) => ((a.closed ? 1 : 0) - (b.closed ? 1 : 0)) || (need(b) - need(a)) || String(a.name).localeCompare(String(b.name)));
+  const box = $('#wins'); box.innerHTML = '';
+  if (!wins.length) { box.innerHTML = '<div class="empty">No relays yet. On the PC, open Settings and turn on <b>Phone remote</b>.</div>'; return; }
+  for (const w of wins) {
+    const nd = (w.questions || []).filter((q) => q.needed), open = (w.questions || []).filter((q) => !q.needed);
+    const st = !on ? { kind: 'offline', title: 'PC offline' } : w.closed ? { kind: 'off', title: 'Window closed on the PC' } : (w.state || {});
+    const b = document.createElement('button');
+    b.className = 'wcard' + (nd.length && !w.closed ? ' need' : '') + (w.closed ? ' closed' : '');
+    const pill = nd.length ? `<span class="pill need">${nd.length} needed</span>` : open.length ? `<span class="pill open">${open.length} open</span>` : '<span class="pill none">no questions</span>';
+    const line = nd[0] ? esc('Q' + nd[0].id + ' ' + cleanQ(nd[0].text)) : esc(w.delivery || '');
+    b.innerHTML = `<div class="wrow"><span class="wname">${esc(w.name)}</span>${pill}</div><div class="wstate"><span class="dot ${st.kind === 'busy' ? 'pulse' : ''}" style="background:${stateColor(st.kind)}"></span><span style="color:${stateColor(st.kind)}">${esc(st.title || '')}${w.turn && w.relay ? ' · turn ' + esc(w.turn) : ''}</span></div><div class="wline" style="${nd.length ? 'color:#B9A898' : ''}">${line}</div>`;
+    b.onclick = () => openWin(w.id);
+    box.appendChild(b);
+  }
+}
+function openWin(id) { current = id; qOpen = false; lastChatKey = ''; history.replaceState(null, '', location.pathname + location.search + '#w=' + encodeURIComponent(id)); show('win'); renderWin(true); }
+$('#back').onclick = () => { current = null; history.replaceState(null, '', location.pathname + location.search); show('list'); renderList(); };
+function renderWin(scroll) {
+  const w = store.wins[current]; if (!w) return;
+  const on = pcOnline();
+  $('#wName').textContent = w.name;
+  const sub = $('#wSub'); sub.textContent = w.relay ? `Relay on${w.turn ? ' · turn ' + w.turn : ''}` : 'Relay off'; sub.style.color = w.relay ? '#8FD19E' : '#9AA1AB';
+  const go = $('#goBtn'); go.textContent = w.relay ? 'Stop' : 'Start'; go.classList.toggle('stop', !!w.relay); go.disabled = !on || !!w.closed;
+  const st = !on ? { kind: 'offline', title: 'PC offline', detail: store.pc ? `Last seen ${hm(store.pc.at)}. Wake the PC and open Journey Relay.` : "Your PC hasn't checked in yet." }
+    : w.closed ? { kind: 'off', title: 'Window closed on the PC', detail: 'Open this session on the PC to continue.' } : (w.state || { kind: 'off', title: '' });
+  $('#status').className = 'status ' + st.kind;
+  $('#sDot').style.background = stateColor(st.kind); $('#sDot').classList.toggle('pulse', st.kind === 'busy');
+  $('#sTitle').textContent = st.title || '';
+  $('#sDetail').textContent = (st.detail || '') + (st.kind === 'busy' && st.since ? ` · ${ago(st.since)}` : '');
+  $('#sTime').textContent = hm(w.updated);
+  renderQuestions(w);
+  renderChat(w, scroll);
+}
+function renderQuestions(w) {
+  const qs = w.questions || [];
+  const need = qs.filter((q) => q.needed), later = qs.filter((q) => q.later && !q.needed), open = qs.filter((q) => !q.needed && !q.later);
+  const card = $('#qcard'); card.classList.toggle('hidden', !qs.length); if (!qs.length) return;
+  card.classList.toggle('need', need.length > 0);
+  $('#qTitle').textContent = need.length ? `Questions · ${need.length} needed to continue` : open.length ? `Questions · ${open.length} open` : `Questions · ${later.length} for later`;
+  $('#qSub').textContent = need.length ? [open.length ? open.length + ' open' : '', later.length ? later.length + ' later' : '', 'relay waiting on you'].filter(Boolean).join(' · ') : 'Nothing needed to continue';
+  const bd = $('#qBadge'); bd.classList.toggle('hidden', !need.length); bd.textContent = need.length;
+  $('#qbar').setAttribute('aria-expanded', String(qOpen)); $('#qChev').style.transform = qOpen ? 'rotate(180deg)' : '';
+  const list = $('#qlist'); list.classList.toggle('hidden', !qOpen); if (!qOpen) return;
+  list.style.maxHeight = Math.round(window.innerHeight * 0.38) + 'px';
+  list.innerHTML = '';
+  const item = (q, tag) => { const d = document.createElement('article'); d.className = 'qitem ' + tag; d.innerHTML = `<div class="qh"><span class="tag ${tag}">${tag === 'need' ? 'NEEDED' : tag.toUpperCase()}</span><b style="font-size:13px">Q${esc(q.id)}</b><span class="ai${q.from}">${esc(aiLabel(q.ai))}</span><span style="margin-left:auto;color:#8E949E;font-size:11px">${hm(q.at)}</span></div><div class="b">${esc(cleanQ(q.text))}</div>`; d.onclick = () => d.classList.toggle('full'); return d; };
+  [...need.map((q) => item(q, 'need')), ...open.slice().reverse().map((q) => item(q, 'open')), ...later.map((q) => item(q, 'later'))].forEach((d) => list.appendChild(d));
+}
+$('#qbar').onclick = () => { qOpen = !qOpen; renderWin(); };
+let lastChatKey = '';
+function renderChat(w, scroll) {
+  const box = $('#chat');
+  const acked = new Set((w.acks || []).map((a) => a.file));
+  const mine = pending.filter((p) => p.win === w.id && !acked.has(p.file));
+  const key = JSON.stringify([(w.chat || []).length, (w.chat || []).slice(-1)[0], w.approval && w.approval.id, mine.length, (w.acks || []).length]);
+  if (key === lastChatKey && !scroll) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const old = $('#apText'); const keep = old ? { id: old.dataset.id, v: old.value } : null;
+  lastChatKey = key; box.innerHTML = '';
+  for (const m of (w.chat || [])) {
+    const d = document.createElement('div');
+    const k = m.kind === 'you' ? 'you' : m.kind === 'q' ? 'q' : /^sys|^tool/.test(m.kind) ? 'sys' : 'ai';
+    d.className = 'm ' + k; d.textContent = String(m.text || '').replace(/\*\*(.+?)\*\*/g, '$1');
+    const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = hm(m.t); d.appendChild(ts);
+    box.appendChild(d);
+  }
+  for (const p of mine) { const d = document.createElement('div'); d.className = 'm you pending'; d.textContent = p.text; const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = `Sent ${hm(p.at)} · waiting for the PC…`; d.appendChild(ts); box.appendChild(d); }
+  const lastAck = (w.acks || []).slice(-1)[0];
+  if (lastAck && pending.some((p) => p.file === lastAck.file)) { const d = document.createElement('div'); d.className = 'm sys'; d.textContent = lastAck.ok ? `Reached the PC ${hm(lastAck.at)}` : `Not taken: ${lastAck.note}`; box.appendChild(d); }
+  if (w.approval) {
+    const a = w.approval, d = document.createElement('div'); d.className = 'ap';
+    d.innerHTML = `<div class="h">${esc(a.title)}</div><textarea id="apText" aria-label="Text to send"></textarea><div class="row"><button class="ok" id="apOk">Send</button><button id="apNo">Don't send</button></div>`;
+    box.appendChild(d);
+    const ta = $('#apText'); ta.dataset.id = a.id; ta.value = keep && keep.id === a.id ? keep.v : a.text;
+    const fit = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, Math.round(window.innerHeight * 0.5)) + 'px'; }; fit(); ta.oninput = fit;
+    $('#apOk').onclick = () => send({ type: 'approve', card: a.id, text: ta.value }, 'Approval sent');
+    $('#apNo').onclick = () => send({ type: 'decline', card: a.id }, "Sent: don't send");
+  }
+  if (scroll || atBottom) box.scrollTop = 1e9;
+}
+async function send(cmd, label) {
+  const w = store.wins[current]; if (!w) return;
+  try {
+    const file = await api.send({ ...cmd, win: w.id });
+    if (cmd.type === 'message') pending.push({ file, win: w.id, text: cmd.text, at: new Date().toISOString() });
+    if (cmd.type === 'approve' || cmd.type === 'decline') w.approval = null;
+    toast(label || 'Sent'); lastChatKey = ''; renderWin(true);
+  } catch (e) { if (e.message === 'signin') needSignIn(); else toast("Couldn't send: " + e.message); }
+}
+$('#sayForm').onsubmit = (e) => { e.preventDefault(); const t = $('#say').value.trim(); if (!t) return; $('#say').value = ''; $('#say').style.height = ''; send({ type: 'message', text: t }); };
+$('#say').addEventListener('input', (e) => { const t = e.target; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 140) + 'px'; });
+$('#say').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 760px)').matches) { e.preventDefault(); $('#sayForm').requestSubmit(); } });
+$('#goBtn').onclick = () => { const w = store.wins[current]; if (!w) return; send({ type: 'relay', on: !w.relay }, w.relay ? 'Asked the PC to stop the relay' : 'Asked the PC to start the relay'); };
+
+// ---------- Loop ----------
+let timer = null;
+function needSignIn() { clearInterval(timer); timer = null; show('signin'); $('#gbtn').textContent = 'Reconnect with Google'; }
+async function tick() {
+  try { await api.refresh(); render(); }
+  catch (e) {
+    if (e.message === 'signin') needSignIn();
+    else if (e.message === 'noremote') { show('list'); $('#wins').innerHTML = '<div class="empty">No relay data in your Drive yet. On the PC, open Settings and turn on <b>Phone remote</b>.</div>'; }
+    else toast(e.message);
+  }
+}
+function start() {
+  show('list');
+  const h = new URLSearchParams(location.hash.slice(1)).get('w');
+  tick().then(() => { if (h && store.wins[h]) openWin(h); });
+  clearInterval(timer); timer = setInterval(() => { if (document.visibilityState === 'visible') tick(); }, MOCK ? 1000 : 5000);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && timer) tick(); });
+setInterval(() => { if (!current) return; const w = store.wins[current]; if (w && w.state && w.state.kind === 'busy' && pcOnline()) $('#sDetail').textContent = (w.state.detail || '') + ` · ${ago(w.state.since)}`; }, 1000);
+
+if (MOCK) { mockInit(); start(); }
+else if (restoreToken()) start();
+else show('signin');
+</script>
+<script src="https://accounts.google.com/gsi/client" async defer onload="initGoogle()"></script>
+</body>
+</html>

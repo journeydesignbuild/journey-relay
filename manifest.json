@@ -1,6 +1,6 @@
 {
-  "version": "1.12.2",
-  "notes": "Replies to the moderator's messages that ask the other AI for something are relayed (they used to stall the relay). Questions card opens to half the moderator area.",
+  "version": "1.13.0",
+  "notes": "Phone remote (desktop side): turn it on in Settings to show your relays on your phone and take messages and approvals from it, through Google Drive.",
   "files": [
     "main.js",
     "preload.js",

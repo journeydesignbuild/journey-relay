@@ -137,6 +137,7 @@ const DEFAULTS = {
   updateRepo: 'journeydesignbuild/journey-relay',
   githubToken: '',
   auto: true,
+  remote: false,
   driveFolder: ''
 };
 
@@ -557,12 +558,62 @@ function writeStatusFile() {
       `- Delivery: ${x.delivery || '-'}`,
       `- Last activity: ${x.last || '-'}`, '');
   });
+  writeRemoteFiles(dir, list);
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'STATUS.md'), lines.join('\n'));
     fs.writeFileSync(path.join(dir, '_status.json'), JSON.stringify({ updated: now.toISOString(), host: os.hostname(), windows: list }, null, 2));
   } catch {}
 }
+// ---------- Phone remote (through Google Drive) ----------
+// Each window's live state goes to Journey Relay/_remote/win-<session>.json; the phone drops commands into _remote/inbox.
+const remoteWritten = new Map(); // file -> last JSON written (only write on change)
+const remoteDir = () => { const root = findDriveRoot(); return root ? path.join(root, 'Journey Relay', '_remote') : null; };
+function writeRemoteFiles(dir, list) {
+  if (!loadSettings().remote) return;
+  const rd = path.join(dir, '_remote');
+  try { fs.mkdirSync(path.join(rd, 'inbox'), { recursive: true }); } catch { return; }
+  const live = new Set();
+  for (const x of list) {
+    if (!x.remote || !x.remote.id) continue;
+    const f = path.join(rd, `win-${x.remote.id.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+    live.add(f);
+    const body = JSON.stringify({ ...x.remote, host: os.hostname() }, null, 1);
+    if (remoteWritten.get(f) === body) continue;
+    try { fs.writeFileSync(f, body); remoteWritten.set(f, body); } catch {}
+  }
+  // windows that closed: mark them closed so the phone stops showing them as live
+  for (const [f] of remoteWritten) if (!live.has(f)) { try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); j.closed = true; j.updated = new Date().toISOString(); fs.writeFileSync(f, JSON.stringify(j, null, 1)); } catch {} remoteWritten.delete(f); }
+}
+function remoteHeartbeat() {
+  if (!loadSettings().remote) return;
+  const rd = remoteDir(); if (!rd) return;
+  try { fs.mkdirSync(rd, { recursive: true }); fs.writeFileSync(path.join(rd, 'pc.json'), JSON.stringify({ host: os.hostname(), at: new Date().toISOString(), windows: statusByWindow.size, version: localManifest().version })); } catch {}
+}
+const inboxSeen = new Set();
+function pollInbox() {
+  if (!loadSettings().remote) return;
+  const rd = remoteDir(); if (!rd) return;
+  const inbox = path.join(rd, 'inbox');
+  let names = [];
+  try { names = fs.readdirSync(inbox).filter((n) => n.endsWith('.json')).sort(); } catch { return; }
+  for (const n of names) {
+    if (inboxSeen.has(n)) continue;
+    const f = path.join(inbox, n);
+    let cmd;
+    try { cmd = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { continue; } // still syncing: try next round
+    inboxSeen.add(n);
+    let target = null;
+    for (const w of BrowserWindow.getAllWindows()) { const st = statusByWindow.get(w.webContents.id); if (st && st.remote && st.remote.id === cmd.win) target = w; }
+    if (target) target.webContents.send('remote:cmd', { ...cmd, file: n });
+    try { fs.rmSync(f, { force: true }); } catch {}
+    if (!target) { try { fs.writeFileSync(path.join(rd, 'undelivered.json'), JSON.stringify({ at: new Date().toISOString(), cmd, why: 'That relay window is not open on the PC.' })); } catch {} }
+  }
+}
+setInterval(pollInbox, 3000);
+setInterval(remoteHeartbeat, 30000);
+ipcMain.handle('remote:heartbeat', () => { remoteHeartbeat(); return true; });
+
 ipcMain.handle('status:update', (e, st) => {
   const id = e.sender.id;
   if (!statusByWindow.has(id)) e.sender.once('destroyed', () => { statusByWindow.delete(id); writeStatusFile(); });

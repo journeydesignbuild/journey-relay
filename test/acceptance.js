@@ -191,7 +191,7 @@ module.exports = (win, app) => {
       await js(`window.api.driveSet('/tmp/fakedrive2/My Drive')`);
       await js(`window.api.saveSettings({ ...settings, driveFolder: '' })`); // a stale window saving
       const d17 = await js('window.api.driveInfo().then(r => r.root)');
-      await js(`window.api.driveSet(${JSON.stringify('')})`);
+      await js(`window.api.driveSet('/tmp/fakedrive/My Drive')`);
       check('17. Drive choice survives a stale window saving settings', d17 === '/tmp/fakedrive2/My Drive', `before ${d0}; after stale save ${d17}`);
 
       // ---- 18. A Stop button outside the chat (task tracker) doesn't make the AI look busy ----
@@ -266,6 +266,33 @@ module.exports = (win, app) => {
       await sleep(12000);
       const b22c = await recv(1);
       check('22. Side reply with a request is relayed; one with REQUESTS: NONE is not', ok22 && b22c === b22b, `relayed=${ok22}; NONE case BETA ${b22b}→${b22c}`);
+
+      // ---- 23. Phone remote: status file written, phone message and approval taken in ----
+      await js('settings.remote = true; window.api.saveSettings(settings); pushStatus(); true');
+      await sleep(3500);
+      const rd = '/tmp/fakedrive/My Drive/Journey Relay/_remote';
+      const fsx = require('fs');
+      const winFiles = (() => { try { return fsx.readdirSync(rd).filter((n) => n.startsWith('win-')); } catch { return []; } })();
+      const snap = winFiles.length ? JSON.parse(fsx.readFileSync(rd + '/' + winFiles[0], 'utf8')) : {};
+      const sid = await js('session ? session.id : "window"');
+      // a message from the phone
+      await js('modBusy = true; modQueue.length = 0; true');
+      fsx.mkdirSync(rd + '/inbox', { recursive: true });
+      fsx.writeFileSync(rd + '/inbox/001-test.json', JSON.stringify({ win: sid, type: 'message', text: 'Q-24 Maruta' }));
+      await sleep(4500);
+      const q23 = await js('modQueue.slice()');
+      // an approval answered from the phone
+      await js('window.__card23 = askApproval("Test card", "hello"); true');
+      await sleep(2500);
+      const cardId = await js('pendingApproval && pendingApproval.card.id');
+      fsx.writeFileSync(rd + '/inbox/002-test.json', JSON.stringify({ win: sid, type: 'approve', card: cardId, text: 'hello edited' }));
+      await sleep(4500);
+      const res23 = await js('window.__card23');
+      const inboxLeft = fsx.readdirSync(rd + '/inbox').length;
+      await js('modQueue.length = 0; modBusy = false; settings.remote = false; window.api.saveSettings(settings); true');
+      check('23. Phone remote: status written, phone message queued, approval answered, inbox emptied',
+        winFiles.length === 1 && snap.id === sid && snap.state && Array.isArray(snap.questions) && q23[0] === 'Q-24 Maruta' && res23 && res23.ok && res23.text === 'hello edited' && inboxLeft === 0,
+        JSON.stringify({ files: winFiles.length, state: snap.state, q: q23, card: res23, inboxLeft }));
 
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);

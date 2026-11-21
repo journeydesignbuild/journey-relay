@@ -28,5 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   syncPull: () => ipcRenderer.invoke('sync:pull'),
   syncSignin: (pw) => ipcRenderer.invoke('sync:signin', pw),
   pane: (i, method, args) => ipcRenderer.invoke('pane:call', i, method, args),
-  onPaneEvent: (fn) => ipcRenderer.on('pane:event', (_e, d) => fn(d))
+  onPaneEvent: (fn) => ipcRenderer.on('pane:event', (_e, d) => fn(d)),
+  onRemote: (fn) => ipcRenderer.on('remote:cmd', (_e, d) => fn(d)),
+  remoteHeartbeat: () => ipcRenderer.invoke('remote:heartbeat')
 });

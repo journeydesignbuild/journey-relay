@@ -1149,9 +1149,36 @@ function refreshBusy() {
   if (!el) return;
   const b = isBusy();
   const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${label(0)} (${aiName(0)}) is working` : working[1] ? `${label(1)} (${aiName(1)}) is working` : 'The relay is sending';
+  if (b && (!busySince || busyWho !== who)) { busySince = nowIso(); busyWho = who; } else if (!b) { busySince = null; busyWho = ''; }
   el.textContent = b ? `Busy · ${who}. Hands off the chats.` : 'Safe to type in the chats.';
   el.className = 'busy-line ' + (b ? 'busy' : 'idle');
   pushStatus();
+}
+let busySince = null, busyWho = '';
+const remoteAcks = []; // last messages taken in from the phone
+function remoteState() {
+  const needed = liveQuestions().filter(questionNeeded);
+  if (R.blocker) return { kind: 'blocked', title: 'Blocked', detail: R.blocker };
+  if (isBusy()) {
+    const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${aiName(0) === 'CLAUDE' ? 'Claude' : aiName(0) === 'CHATGPT' ? 'ChatGPT' : aiName(0)} is working` : working[1] ? `${aiName(1) === 'CLAUDE' ? 'Claude' : aiName(1) === 'CHATGPT' ? 'ChatGPT' : aiName(1)} is working` : 'Sending';
+    return { kind: 'busy', title: `Busy · ${who}`, detail: R.phase || '', since: busySince };
+  }
+  if (needed.length || R.waitingOn) return { kind: 'waiting', title: 'Waiting for your answers', detail: `${needed.length || 1} needed to continue` };
+  if (pendingApproval) return { kind: 'waiting', title: 'Waiting for your OK', detail: 'An approval card is open' };
+  if (!R.on) return { kind: 'off', title: 'Relay off', detail: 'Nothing running' };
+  return { kind: 'safe', title: 'Safe · nothing running', detail: 'Relay on, waiting for the next reply' };
+}
+function remoteSnapshot() {
+  const card = pendingApproval && pendingApproval.card;
+  return {
+    v: 1, id: session ? session.id : 'window', name: session ? sessionTitle() : (R.task || 'Untitled session'),
+    updated: nowIso(), relay: !!R.on, turn: R.on ? `${R.turn} of ${maxTurns()}` : '', ai: [aiName(0), aiName(1)],
+    state: remoteState(), delivery: deliveryText().text,
+    questions: liveQuestions().map((q) => ({ id: q.id, from: q.from, ai: q.ai, text: q.text, at: q.at || '', needed: questionNeeded(q), later: q.state === 'later' })),
+    chat: chatLog.slice(-40).map((m) => ({ kind: m.kind, text: short(m.text, 2000), t: m.t })),
+    approval: card ? { id: card.id, title: card.title, text: card.text } : null,
+    acks: remoteAcks.slice(-10)
+  };
 }
 let statusTimer = null;
 function pushStatus() {
@@ -1169,6 +1196,7 @@ function pushStatus() {
       questions: openQ.map((q) => `Q${q.id} (${q.ai}): ${short(q.text, 140)}`).join(' | '),
       summary: short(summaryText, 400),
       delivery: deliveryText().text,
+      remote: settings && settings.remote ? remoteSnapshot() : undefined,
       last: lastNote ? `${short(lastNote.text, 120)} (${new Date().toLocaleTimeString()})` : ''
     });
   }, 1500);
@@ -1238,6 +1266,7 @@ function renderQuestions() {
   $('#qTitle').textContent = needed.length ? `Questions · ${needed.length} needed to continue` : open.length ? `Questions · ${open.length} open` : later.length ? `Questions · ${later.length} for later` : 'No open questions';
   $('#qSub').textContent = needed.length || open.length ? [open.length && needed.length ? `${open.length} open` : '', later.length ? `${later.length} later` : '', needed.length ? 'relay waiting on you' : ''].filter(Boolean).join(' · ') : '';
   const badge = $('#qBadge'); badge.classList.toggle('hidden', !needed.length); badge.textContent = needed.length;
+  pushStatus();
   const list = $('#qList'); list.classList.toggle('hidden', !qOpen);
   if (!qOpen) return;
   sizeQuestions();
@@ -1613,8 +1642,9 @@ function askApproval(title, text) {
     ta.addEventListener('input', fit);
     window.addEventListener('resize', fit);
     d.scrollIntoView({ block: 'end' });
+    const cardId = 'ap' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
     const done = (ok, why) => {
-      if (pendingApproval === done) pendingApproval = null;
+      if (pendingApproval === done) { pendingApproval = null; pushStatus(); }
       const finalText = ta.value;
       // collapse to a one-line record; click it to see the text
       d.innerHTML = '<details><summary class="ap-title"></summary><div class="ap-body"></div></details>';
@@ -1625,7 +1655,9 @@ function askApproval(title, text) {
       autosave();
       resolve(ok ? { ok: true, text: finalText, edited: finalText !== text } : { ok: false, why });
     };
+    done.card = { id: cardId, title, get text() { return ta.value; }, set text(v) { ta.value = v; } };
     pendingApproval = done;
+    pushStatus();
     $('.ap-ok', d).onclick = () => done(true);
     $('.ap-no', d).onclick = () => done(false);
   });
@@ -1659,6 +1691,7 @@ function modMsg(kind, text, at) {
   if (/^sys|^tool/.test(kind)) d.prepend(ts); else d.appendChild(ts);
   box.appendChild(d);
   box.scrollTop = 1e9;
+  if (!restoring) pushStatus();
 }
 function cleanHistory() {
   // Keep history valid: start on a plain user message, end on a finished assistant turn
@@ -1730,7 +1763,7 @@ async function moderatorSend(text, opts = {}) {
   }
   if (!settings.apiKey) { modMsg('err', 'Add an Anthropic API key in ⚙ Settings to use the moderator.'); return; }
   modBusy = true;
-  if (opts.auto) modMsg('tool', 'Checking your pre-approvals'); else if (!opts.queued) modMsg('you', text);
+  if (opts.auto) modMsg('tool', 'Checking your pre-approvals'); else if (!opts.queued) modMsg('you', opts.fromRemote ? 'From phone: ' + text : text);
   modHistory.push({ role: 'user', content: text });
   try {
     for (let step = 0; step < 10; step++) {
@@ -1756,6 +1789,30 @@ async function moderatorSend(text, opts = {}) {
   } finally {
     modBusy = false;
     if (modQueue.length) { const next = modQueue.splice(0).join('\n\n'); setTimeout(() => moderatorSend(next, { queued: true }), 50); }
+  }
+}
+
+// ---------- Phone remote: commands arriving through Google Drive ----------
+function handleRemote(cmd) {
+  if (!settings.remote || !cmd) return;
+  const ack = (ok, note2) => { remoteAcks.push({ file: cmd.file, at: nowIso(), type: cmd.type, ok, note: note2 || '' }); if (remoteAcks.length > 20) remoteAcks.shift(); pushStatus(); };
+  switch (cmd.type) {
+    case 'message': {
+      const t = String(cmd.text || '').trim(); if (!t) return ack(false, 'empty');
+      ack(true);
+      moderatorSend(t, { fromRemote: true });
+      return;
+    }
+    case 'approve': case 'decline': {
+      const card = pendingApproval && pendingApproval.card;
+      if (!card || card.id !== cmd.card) return ack(false, 'That approval card was already answered.');
+      if (cmd.type === 'approve' && typeof cmd.text === 'string' && cmd.text.trim()) card.text = cmd.text;
+      note(`From your phone: ${cmd.type === 'approve' ? 'Send' : "Don't send"} (${card.title}).`);
+      pendingApproval(cmd.type === 'approve', cmd.type === 'decline' ? 'remote' : undefined);
+      return ack(true);
+    }
+    case 'relay': setRelay(!!cmd.on, cmd.on ? undefined : 'Relay off (from your phone).'); return ack(true);
+    default: return ack(false, 'unknown command');
   }
 }
 
@@ -1795,6 +1852,7 @@ function openSettings() {
     sel.dataset.was = cur;
   });
   $('#sToken').value = settings.githubToken || '';
+  $('#sRemote').checked = !!settings.remote;
   $('#settingsErr').textContent = '';
   setPanesVisible(false);
   $('#settings').showModal();
@@ -1824,8 +1882,10 @@ async function submitSettings(e) {
     framework: $('#sFramework').value.trim() || settings.framework,
     adapters,
     updateRepo: $('#sRepo').value.trim() || settings.updateRepo,
-    githubToken: $('#sToken').value.trim()
+    githubToken: $('#sToken').value.trim(),
+    remote: $('#sRemote').checked
   });
+  if (settings.remote) { window.api.remoteHeartbeat(); pushStatus(); }
   await window.api.saveSettings(settings);
   const pw = $('#sSyncPw').value;
   const sr = await pushSync(pw || undefined);
@@ -2071,6 +2131,7 @@ async function init() {
   $('#filesBtn').title = "Open this session's folder in Google Drive (right-click: local backup copies)";
   $('#sessionBar').onclick = () => window.__setMenu(true);
   $('#newBtn').onclick = () => { window.__setMenu(false); newSession(); };
+  window.api.onRemote(handleRemote);
   $('#qBar').addEventListener('click', () => { if (!liveQuestions().length) return; qOpen = !qOpen; renderQuestions(); });
   $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; if (window.__growMod) window.__growMod(); moderatorSend(t); });
   const mi = $('#modInput');

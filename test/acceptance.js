@@ -294,6 +294,22 @@ module.exports = (win, app) => {
         winFiles.length === 1 && snap.id === sid && snap.state && Array.isArray(snap.questions) && q23[0] === 'Q-24 Maruta' && res23 && res23.ok && res23.text === 'hello edited' && inboxLeft === 0,
         JSON.stringify({ files: winFiles.length, state: snap.state, q: q23, card: res23, inboxLeft }));
 
+      // ---- 24. Permission prompt: detected, shown, answered from the phone (never clicked on its own) ----
+      await site(1, 'permPrompt(); true');
+      const seen24 = await waitFor('!!R.perm[1]', 20000);
+      await sleep(3000);
+      const auto24 = await site(1, 'window.permClicked');
+      const card24 = await js(`!!document.querySelector('#permCard .perm') && document.querySelector('#busyLine').textContent`);
+      const st24 = await js('remoteState().title');
+      const sig24 = await js('R.perm[1] && R.perm[1].sig');
+      await js(`handleRemote({ type: 'perm', pane: 1, label: 'Allow once', sig: ${JSON.stringify('X')} }); true`); // stale prompt id: refused
+      await sleep(1500);
+      const stale24 = await site(1, 'window.permClicked');
+      await js(`handleRemote({ type: 'perm', pane: 1, label: 'Allow once', sig: ${JSON.stringify(sig24)} }); true`);
+      await sleep(2000);
+      const clicked24 = await site(1, 'window.permClicked');
+      check('24. Permission prompt: shown as needed, not auto-clicked, stale tap refused, phone tap clicks it', seen24 && auto24 === '' && /permission/.test(card24 || '') && /needs your permission/.test(st24) && stale24 === '' && clicked24 === 'Allow once', JSON.stringify({ seen24, auto24, card24, st24, stale24, clicked24 }));
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

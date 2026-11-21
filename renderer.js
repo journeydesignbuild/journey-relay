@@ -43,7 +43,9 @@ const R = {
   on: false, busy: false, turn: 0, phase: 'Off',
   task: '', introduced: [false, false], complete: [false, false],
   queued: [[], []], lastFrom: null,
-  sendNote: ['', ''],      // what the last send attempt in each pane did (debug report)
+  sendNote: ['', ''],
+  perm: [null, null],      // a permission prompt showing in each pane: {text, buttons, sig, since}
+  permHtml: ['', ''],      // how the last prompt was built (debug report)      // what the last send attempt in each pane did (debug report)
   preapproved: [],         // Justin's standing OKs: [{id, text, to, covers}] used once when an AI waits on him
   waitingOn: null,
   seen: ['', ''],          // last reply already handled in each pane (so old replies aren't re-sent)
@@ -256,6 +258,40 @@ function pgAttach(name, content, type) {
   inp.files = dt.files;
   inp.dispatchEvent(new Event('input', { bubbles: true }));
   inp.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true };
+}
+// A permission prompt (connect Supabase, allow a tool…): an Allow-type button and a Deny-type button side by side
+function pgPerm() {
+  const vis = (e) => e.getClientRects().length > 0;
+  const lab = (b) => (b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  const YES = /^(allow|allow once|always allow|allow always|allow for this chat|allow for this conversation|approve|accept|connect|continue|confirm|yes|run|grant access|authorize)$/i;
+  const NO = /^(deny|decline|don't allow|do not allow|reject|cancel|no|not now|block)$/i;
+  const btns = [...document.querySelectorAll('button, [role="button"]')].filter(vis).filter((b) => !b.disabled);
+  const yes = btns.filter((b) => YES.test(lab(b)));
+  if (!yes.length) return { found: false };
+  for (const y of yes.reverse()) {
+    // smallest box around this Allow button that also holds a Deny-type button
+    let box = y.parentElement;
+    for (let d = 0; d < 7 && box; d++, box = box.parentElement) {
+      const inside = [...box.querySelectorAll('button, [role="button"]')].filter(vis);
+      if (inside.length > 8) break; // grew too big: that's the page, not a prompt
+      if (inside.some((b) => NO.test(lab(b)))) {
+        const buttons = inside.map(lab).filter((t) => YES.test(t) || NO.test(t));
+        const text = (box.innerText || '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500);
+        // a plain "Continue / Cancel" pair with almost no text is ordinary UI, not a permission request
+        if (!/allow|permission|access|connect|approve|authori|tool|wants to|would like to|use /i.test(text) && !buttons.some((t) => /allow|approve|authori/i.test(t))) break;
+        return { found: true, text, buttons: [...new Set(buttons)], html: box.outerHTML.slice(0, 4000) };
+      }
+    }
+  }
+  return { found: false };
+}
+function pgPermClick(label) { // runs inside the chat page: must stand alone
+  const vis = (e) => e.getClientRects().length > 0;
+  const lab = (b) => (b.innerText || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  const b = [...document.querySelectorAll('button, [role="button"]')].filter(vis).filter((x) => lab(x) === label).pop();
+  if (!b) return { ok: false, why: `No "${label}" button.` };
+  b.click();
   return { ok: true };
 }
 function pgKeyEnter(sel) {
@@ -887,6 +923,7 @@ async function tickOnce() {
     try { r = await readPane(i); } catch {}
     reads[i] = r;
     if (!r) continue;
+    try { await checkPerm(i); } catch {}
     const w = !!r.busy || (r.key !== lastKey[i] && !!lastKey[i]);
     lastKey[i] = r.key;
     if (w !== working[i]) { working[i] = w; refreshBusy(); }
@@ -1149,6 +1186,8 @@ function refreshBusy() {
   if (!el) return;
   const b = isBusy();
   const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${label(0)} (${aiName(0)}) is working` : working[1] ? `${label(1)} (${aiName(1)}) is working` : 'The relay is sending';
+  const pPane = [0, 1].find((i) => R.perm && R.perm[i]);
+  if (pPane !== undefined) { el.textContent = `${label(pPane)} (${aiName(pPane)}) needs your permission. See the card below.`; el.className = 'busy-line busy'; pushStatus(); return; }
   if (b && (!busySince || busyWho !== who)) { busySince = nowIso(); busyWho = who; } else if (!b) { busySince = null; busyWho = ''; }
   el.textContent = b ? `Busy · ${who}. Hands off the chats.` : 'Safe to type in the chats.';
   el.className = 'busy-line ' + (b ? 'busy' : 'idle');
@@ -1158,6 +1197,8 @@ let busySince = null, busyWho = '';
 const remoteAcks = []; // last messages taken in from the phone
 function remoteState() {
   const needed = liveQuestions().filter(questionNeeded);
+  const pi = [0, 1].find((i) => R.perm[i]);
+  if (pi !== undefined) return { kind: 'waiting', title: `${aiName(pi) === 'CLAUDE' ? 'Claude' : aiName(pi) === 'CHATGPT' ? 'ChatGPT' : aiName(pi)} needs your permission`, detail: short(R.perm[pi].text.split('\n')[0], 120), since: R.perm[pi].since };
   if (R.blocker) return { kind: 'blocked', title: 'Blocked', detail: R.blocker };
   if (isBusy()) {
     const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${aiName(0) === 'CLAUDE' ? 'Claude' : aiName(0) === 'CHATGPT' ? 'ChatGPT' : aiName(0)} is working` : working[1] ? `${aiName(1) === 'CLAUDE' ? 'Claude' : aiName(1) === 'CHATGPT' ? 'ChatGPT' : aiName(1)} is working` : 'Sending';
@@ -1177,6 +1218,7 @@ function remoteSnapshot() {
     questions: liveQuestions().map((q) => ({ id: q.id, from: q.from, ai: q.ai, text: q.text, at: q.at || '', needed: questionNeeded(q), later: q.state === 'later' })),
     chat: chatLog.slice(-40).map((m) => ({ kind: m.kind, text: short(m.text, 2000), t: m.t })),
     approval: card ? { id: card.id, title: card.title, text: card.text } : null,
+    perms: [0, 1].filter((i) => R.perm[i]).map((i) => ({ pane: i, ai: aiName(i), text: R.perm[i].text, buttons: R.perm[i].buttons, sig: R.perm[i].sig, since: R.perm[i].since })),
     acks: remoteAcks.slice(-10)
   };
 }
@@ -1453,7 +1495,7 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 
 Relay: ${relayStatus()}
 ${R.waitingOn ? `Waiting on Justin: ${aiName(R.waitingOn.from)} (AI ${R.waitingOn.from + 1}) asked a question in RESPONSE ${R.waitingOn.num || '?'} and has nothing for the other AI.
-` : ''}Delivery: ${deliveryText().text}
+` : ''}${[0, 1].filter((i) => R.perm[i]).map((i) => `PERMISSION PROMPT in AI ${i + 1} (${aiName(i)}), waiting on Justin: "${short(R.perm[i].text, 400)}" Buttons: ${R.perm[i].buttons.join(' / ')}. You can't click it; Justin answers on the card or his phone.\n`).join('')}Delivery: ${deliveryText().text}
 Held messages: ${R.held.length ? R.held.map((h, k) => `#${k + 1} ${label(h.from)} RESPONSE ${h.num || '?'} (${h.why})`).join('; ') : 'none'}
 Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'}
 Goal: ${R.task || '(none set)'}
@@ -1792,6 +1834,53 @@ async function moderatorSend(text, opts = {}) {
   }
 }
 
+// ---------- Permission prompts in the panes ----------
+async function checkPerm(i) {
+  const r = await run(panes[i], pgPerm);
+  const had = R.perm[i];
+  if (!r || !r.found) { if (had) { R.perm[i] = null; renderPerm(); note(`${aiName(i)}'s permission prompt is gone.`); } return; }
+  const sig = hashText(norm(r.text) + '|' + r.buttons.join('|'));
+  R.permHtml[i] = r.html;
+  if (had && had.sig === sig) return;
+  R.perm[i] = { text: r.text, buttons: r.buttons, sig, since: nowIso() };
+  note(`${aiName(i)} is asking for your permission. Answer it in the card above, on your phone, or in the ${aiName(i)} pane.`, false);
+  renderPerm();
+}
+async function answerPerm(i, labelText, sig) {
+  const pm = R.perm[i];
+  if (!pm || (sig && pm.sig !== sig)) return { ok: false, why: 'That permission prompt already changed or closed.' };
+  if (!pm.buttons.includes(labelText)) return { ok: false, why: `No "${labelText}" button.` };
+  const r = await run(panes[i], pgPermClick, labelText);
+  if (r && r.ok) { note(`Clicked "${labelText}" on ${aiName(i)}'s permission prompt.`); R.perm[i] = null; renderPerm(); }
+  return r || { ok: false };
+}
+function renderPerm() {
+  let box = $('#permCard');
+  if (!box) { box = document.createElement('section'); box.id = 'permCard'; box.className = 'permcard hidden'; box.setAttribute('aria-label', 'Permission requests'); $('#qCard').before(box); }
+  const items = [0, 1].filter((i) => R.perm[i]);
+  box.classList.toggle('hidden', !items.length);
+  box.innerHTML = '';
+  for (const i of items) {
+    const pm = R.perm[i];
+    const d = document.createElement('div');
+    d.className = 'perm';
+    d.innerHTML = `<div class="ph"><span class="qtag needed">PERMISSION</span><b></b><span class="qtime"></span></div><div class="pt"></div><div class="pb"></div>`;
+    $('b', d).textContent = `${aiName(i) === 'CLAUDE' ? 'Claude' : aiName(i) === 'CHATGPT' ? 'ChatGPT' : aiName(i)} needs your permission`;
+    $('.qtime', d).textContent = fmtTime(pm.since);
+    $('.pt', d).textContent = pm.text;
+    for (const b of pm.buttons) {
+      const btn = document.createElement('button');
+      btn.textContent = b;
+      btn.className = !/always/i.test(b) && /allow|approve|accept|authori|connect|yes|run|confirm|continue|grant/i.test(b) ? 'primary' : '';
+      btn.onclick = () => answerPerm(i, b, pm.sig);
+      $('.pb', d).appendChild(btn);
+    }
+    box.appendChild(d);
+  }
+  refreshBusy();
+  pushStatus();
+}
+
 // ---------- Phone remote: commands arriving through Google Drive ----------
 function handleRemote(cmd) {
   if (!cmd) return; // the PC only passes commands on when Phone remote is on
@@ -1812,6 +1901,11 @@ function handleRemote(cmd) {
       return ack(true);
     }
     case 'relay': setRelay(!!cmd.on, cmd.on ? undefined : 'Relay off (from your phone).'); return ack(true);
+    case 'perm': {
+      note(`From your phone: "${cmd.label}" on ${aiName(cmd.pane | 0)}'s permission prompt.`);
+      answerPerm(cmd.pane | 0, String(cmd.label || ''), cmd.sig).then((r) => ack(!!r.ok, r.ok ? '' : r.why));
+      return;
+    }
     default: return ack(false, 'unknown command');
   }
 }
@@ -1948,6 +2042,7 @@ async function debugReport() {
   const drv = await window.api.driveInfo();
   lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'} · sessions saved ${drv.found ? 'in Drive (Journey Relay/_sessions)' : 'on this computer only'} · computer: ${myHost}`);
   lines.push(`Delivery: ${deliveryText().text}`);
+  [0, 1].forEach((i) => { if (R.permHtml[i]) lines.push(`Permission prompt seen in AI ${i + 1}${R.perm[i] ? ' (showing now)' : ''}: ${R.permHtml[i].replace(/\s+/g, ' ').slice(0, 1500)}`); });
   lines.push(`Last send attempt: AI 1 ${R.sendNote[0] || '-'} · AI 2 ${R.sendNote[1] || '-'}`);
   lines.push('Recent deliveries: ' + (R.ledger.slice(-6).map((y) => `${label(y.from)} R${y.num || '?'}→${label(y.to)} ${y.state}${y.attempts > 1 ? ` (${y.attempts} tries)` : ''}`).join(' | ') || 'none'));
   lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);

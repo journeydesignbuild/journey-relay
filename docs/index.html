@@ -94,6 +94,8 @@ header.top h1 { margin: 0; font-size: 24px; flex: 1; }
 .ap .row { display: flex; gap: 8px; }
 .ap .row button { height: 44px; border-radius: 10px; border: 1px solid var(--line2); background: #1C2026; padding: 0 14px; }
 .ap .row .ok { flex: 1; background: var(--orange); color: #1A1205; border: none; font-weight: 700; }
+.ap .pt { white-space: pre-wrap; padding: 9px 10px; border-radius: 8px; border: 1px solid #7A4A26; background: #140F0B; color: #F3E6DA; font-size: 14px; max-height: 40vh; overflow-y: auto; }
+.ap .row { flex-wrap: wrap; }
 form.say { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #111418; }
 form.say textarea { flex: 1; min-width: 0; resize: none; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line2); background: var(--bg); max-height: 140px; font-size: 16px; }
 form.say button { height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--orange); color: #1A1205; font-weight: 700; }
@@ -223,13 +225,14 @@ function mockInit() {
       questions: [{ id: 24, from: 1, ai: 'CLAUDE', text: 'Justin: millwork, does Journey build it or Maruta Makes?', at: iso(30), needed: true }, { id: 25, from: 1, ai: 'CLAUDE', text: 'Justin: do the fence, bench and water feature ($76,621) count inside the $180k landscape allowance?', at: iso(30), needed: true }, { id: 7, from: 1, ai: 'CLAUDE', text: 'Which of the six email drafts are approved?', at: iso(900) }],
       chat: [{ kind: 'sys', text: 'Passed AI 1 → AI 2.', t: iso(40) }, { kind: 'q', text: 'Q24 · CLAUDE asks:\nMillwork: does Journey build it, or Maruta Makes?', t: iso(30) }, { kind: 'ai', text: 'Claude finished the audit review. The relay is paused until you answer Q-24 and Q-25.', t: iso(29) }],
       approval: { id: 'apx', title: 'Your answer → AI 2 (Claude)', text: 'Q-24: Maruta Makes builds the millwork.' }, acks: [] },
-    dev: { id: 'dev', name: 'JDB OS DEV 01', updated: iso(0), relay: true, turn: '6 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'busy', title: 'Busy · Claude is working', detail: 'Waiting for AI 2', since: iso(3) }, delivery: 'AI 1 R083 → AI 2 · waiting for reply', questions: [{ id: 13, from: 1, ai: 'CLAUDE', text: 'PR #20 is live. Last step is a quick read-only check.', at: iso(60) }], chat: [], approval: null, acks: [] },
+    dev: { id: 'dev', name: 'JDB OS DEV 01', updated: iso(0), relay: true, turn: '6 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'waiting', title: 'Claude needs your permission', detail: 'Supabase wants to run apply_migration', since: iso(1) }, delivery: 'AI 1 R083 → AI 2 · waiting for reply', questions: [{ id: 13, from: 1, ai: 'CLAUDE', text: 'PR #20 is live. Last step is a quick read-only check.', at: iso(60) }], chat: [], approval: null, acks: [],
+      perms: [{ pane: 1, ai: 'CLAUDE', text: 'Claude wants to use Supabase: apply_migration\nProject: dev\nName: 046_pdf_match_carryover', buttons: ['Allow once', 'Always allow', 'Deny'], sig: 'p1', since: iso(1) }] },
     sand: { id: 'sand', name: 'Sandbox Agents Cleanup', updated: iso(0), relay: true, turn: '2 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'safe', title: 'Safe · nothing running', detail: 'Relay on, waiting for the next reply' }, delivery: 'Last: AI 2 R042 → AI 1', questions: [], chat: [], approval: null, acks: [] }
   };
 }
 const api = MOCK ? {
   refresh: async () => {},
-  send: async (cmd) => { const n = 'mock-' + Date.now(); setTimeout(() => { const w = store.wins[cmd.win]; if (!w) return; w.acks.push({ file: n, at: new Date().toISOString(), type: cmd.type, ok: true }); if (cmd.type === 'message') w.chat.push({ kind: 'you', text: 'From phone: ' + cmd.text, t: new Date().toISOString() }); if (cmd.type !== 'message') w.approval = null; if (cmd.type === 'relay') w.relay = cmd.on; render(); }, 1200); return n; }
+  send: async (cmd) => { const n = 'mock-' + Date.now(); setTimeout(() => { const w = store.wins[cmd.win]; if (!w) return; w.acks.push({ file: n, at: new Date().toISOString(), type: cmd.type, ok: true }); if (cmd.type === 'message') w.chat.push({ kind: 'you', text: 'From phone: ' + cmd.text, t: new Date().toISOString() }); if (cmd.type === 'perm') w.perms = []; else if (cmd.type !== 'message') w.approval = null; if (cmd.type === 'relay') w.relay = cmd.on; render(); }, 1200); return n; }
 } : { refresh: refreshDrive, send: sendDrive };
 
 // ---------- Sign in ----------
@@ -324,7 +327,7 @@ function renderChat(w, scroll) {
   const box = $('#chat');
   const acked = new Set((w.acks || []).map((a) => a.file));
   const mine = pending.filter((p) => p.win === w.id && !acked.has(p.file));
-  const key = JSON.stringify([(w.chat || []).length, (w.chat || []).slice(-1)[0], w.approval && w.approval.id, mine.length, (w.acks || []).length]);
+  const key = JSON.stringify([(w.chat || []).length, (w.chat || []).slice(-1)[0], w.approval && w.approval.id, (w.perms || []).map((p) => p.sig), mine.length, (w.acks || []).length]);
   if (key === lastChatKey && !scroll) return;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const old = $('#apText'); const keep = old ? { id: old.dataset.id, v: old.value } : null;
@@ -339,6 +342,18 @@ function renderChat(w, scroll) {
   for (const p of mine) { const d = document.createElement('div'); d.className = 'm you pending'; d.textContent = p.text; const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = `Sent ${hm(p.at)} · waiting for the PC…`; d.appendChild(ts); box.appendChild(d); }
   const lastAck = (w.acks || []).slice(-1)[0];
   if (lastAck && pending.some((p) => p.file === lastAck.file)) { const d = document.createElement('div'); d.className = 'm sys'; d.textContent = lastAck.ok ? `Reached the PC ${hm(lastAck.at)}` : `Not taken: ${lastAck.note}`; box.appendChild(d); }
+  for (const pm of (w.perms || [])) {
+    const d = document.createElement('div'); d.className = 'ap';
+    d.innerHTML = `<div class="h">${esc(aiLabel(pm.ai))} needs your permission</div><div class="pt"></div><div class="row"></div>`;
+    d.querySelector('.pt').textContent = pm.text;
+    for (const b of pm.buttons || []) {
+      const btn = document.createElement('button'); btn.textContent = b;
+      if (!/always/i.test(b) && /allow|approve|accept|authori|connect|yes|run|confirm|continue|grant/i.test(b)) btn.className = 'ok';
+      btn.onclick = () => send({ type: 'perm', pane: pm.pane, label: b, sig: pm.sig }, `Sent: ${b}`);
+      d.querySelector('.row').appendChild(btn);
+    }
+    box.appendChild(d);
+  }
   if (w.approval) {
     const a = w.approval, d = document.createElement('div'); d.className = 'ap';
     d.innerHTML = `<div class="h">${esc(a.title)}</div><textarea id="apText" aria-label="Text to send"></textarea><div class="row"><button class="ok" id="apOk">Send</button><button id="apNo">Don't send</button></div>`;
@@ -356,6 +371,7 @@ async function send(cmd, label) {
     const file = await api.send({ ...cmd, win: w.id });
     if (cmd.type === 'message') pending.push({ file, win: w.id, text: cmd.text, at: new Date().toISOString() });
     if (cmd.type === 'approve' || cmd.type === 'decline') w.approval = null;
+    if (cmd.type === 'perm') w.perms = (w.perms || []).filter((p) => p.sig !== cmd.sig);
     toast(label || 'Sent'); lastChatKey = ''; renderWin(true);
   } catch (e) { if (e.message === 'signin') needSignIn(); else toast("Couldn't send: " + e.message); }
 }

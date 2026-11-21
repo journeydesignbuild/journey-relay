@@ -1,6 +1,6 @@
 {
-  "version": "1.13.1",
-  "notes": "Phone remote: turn it on in Settings (one switch covers every open window) to see your relays on your phone and answer from it, through Google Drive.",
+  "version": "1.14.0",
+  "notes": "Permission prompts (connect Supabase, allow a tool\u2026) are spotted in either pane: shown as a card and on your phone with Allow / Deny. Never clicked without you.",
   "files": [
     "main.js",
     "preload.js",

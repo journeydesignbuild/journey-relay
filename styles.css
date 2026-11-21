@@ -237,3 +237,12 @@ dialog h3 { margin: 0; }
 .qitem.full .qbody { display: block; -webkit-line-clamp: unset; }
 
 .qcard.open + .card.mod { min-height: 0; }
+
+/* ---------- Permission prompts ---------- */
+.permcard { border-radius: 10px; border: 1px solid #F08A3C; background: #2A1810; padding: 8px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; max-height: 40vh; overflow-y: auto; }
+.perm { display: flex; flex-direction: column; gap: 6px; }
+.perm .ph { display: flex; align-items: center; gap: 6px; color: #FFE2CC; font-size: 13px; }
+.perm .pt { white-space: pre-wrap; font-size: 13px; line-height: 1.45; color: #F3E6DA; background: #140F0B; border: 1px solid #7A4A26; border-radius: 8px; padding: 8px 10px; max-height: 160px; overflow-y: auto; }
+.perm .pb { display: flex; gap: 8px; flex-wrap: wrap; }
+.perm .pb button { height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid #2E333B; background: #1C2026; color: #E6E8EB; font: inherit; font-weight: 600; }
+.perm .pb button.primary { background: #F08A3C; border: none; color: #1A1205; }

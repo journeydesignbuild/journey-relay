@@ -1086,10 +1086,10 @@ async function reconcile(e, r) {
 }
 
 // Paste text (and attach files) into pane i and click send. Waits until that AI is idle first.
-async function sendOnly(i, text, files = []) {
+async function sendOnly(i, text, files = [], maxWaitMs) {
   const p = panes[i]; const a = adapterFor(p);
   if (!a) throw new Error(`${p.label} isn't set up for this site. Click Teach.`);
-  const limit = Date.now() + (settings.timeoutMin || 60) * 60000;
+  const limit = Date.now() + (maxWaitMs || (settings.timeoutMin || 60) * 60000);
   for (;;) {
     const r = await run(p, pgRead, a.reply, a.busy || '', a.user || '');
     if (!r.busy) break;
@@ -1380,7 +1380,7 @@ async function runTool(name, x) {
         ok = { ok: true, text: pa.text };
         note(`Used your pre-approval #${pa.id} (${pa.covers || 'next step'}) → ${label(targets[0])}.`);
       } else ok = await askApproval(`Your answer → ${targets.map((i) => `${label(i)} (${aiName(i)})`).join(' + ')}`, x.answer);
-      if (!ok.ok) return DECLINED;
+      if (!ok.ok) return declined(ok);
       x.answer = ok.text;
       targets.forEach((i) => R.queued[i].push(x.answer));
       ids.forEach((id) => { const q = questions.find((q) => q.id === id); if (q) q.answered = true; });
@@ -1390,7 +1390,7 @@ async function runTool(name, x) {
         if (R.on) return { queued: true, note: 'The relay is on, so it goes out with the next message to each side.' };
         for (const i of targets) {
           const t = R.queued[i].splice(0);
-          if (t.length) await sendOnly(i, 'USER RESPONSE\n' + t.join('\n\n'));
+          if (t.length) await sendOnly(i, 'USER RESPONSE\n' + t.join('\n\n'), [], 120000);
         }
         return { delivered: true, to: targets.map(label) };
       }
@@ -1415,7 +1415,7 @@ async function runTool(name, x) {
       const dup = R.ledger.find((y) => y.from === from && y.hash === key && y.state !== 'cancelled');
       if (dup && !x.allow_repeat) return { error: `That exact message was already delivered to ${label(dup.to)} at ${fmtTime(dup.awaitingAt || dup.queuedAt)} (${dup.state}). Only resend if Justin explicitly wants it again (allow_repeat=true).` };
       const ok = await askApproval(`Send ${label(from)}'s latest reply → ${label(1 - from)} (${aiName(1 - from)})`, text);
-      if (!ok.ok) return DECLINED;
+      if (!ok.ok) return declined(ok);
       if (fl && ACTIVE.includes(fl.state)) { await setState(fl, 'cancelled'); R.inflight = null; }
       knownAdd(from, key);
       R.blocker = '';
@@ -1436,7 +1436,7 @@ async function runTool(name, x) {
         if (!h) return { error: 'No held message with that index.' };
         if (fl && ACTIVE.includes(fl.state)) return { error: `Something is still ${fl.state}: ${label(fl.from)} RESPONSE ${fl.num || '?'} → ${label(fl.to)}. Resolve that first.` };
         const ok = await askApproval(`Send held ${label(h.from)} RESPONSE ${h.num || '?'} → ${label(1 - h.from)} (${aiName(1 - h.from)})`, h.text);
-        if (!ok.ok) return DECLINED;
+        if (!ok.ok) return declined(ok);
         R.held = R.held.filter((y) => y !== h);
         R.blocker = '';
         await route(h.from, ok.text, msgKey(ok.text), { force: true, allowRepeat: true });
@@ -1469,10 +1469,10 @@ async function runTool(name, x) {
     case 'send_to_pane': {
       const p = P(x.pane);
       const ok = await askApproval(`Message → ${p.label} (${aiName(p.i)})`, x.text);
-      if (!ok.ok) return DECLINED;
+      if (!ok.ok) return declined(ok);
       addLog({ who: 'Moderator', to: p.label, text: ok.text, kind: 'moderator' });
       R.sideChat[p.i] = true; // its answer is a side conversation: not forwarded unless asked
-      await sendOnly(p.i, ok.text);
+      await sendOnly(p.i, ok.text, [], 120000);
       return { sent: true, note: 'Its reply is treated as a side conversation and is not forwarded unless Justin asks (relay_latest).' };
     }
     case 'preapprove': {
@@ -1480,7 +1480,7 @@ async function runTool(name, x) {
       if (x.action === 'clear') { R.preapproved = x.id ? R.preapproved.filter((a) => a.id !== x.id) : []; autosave(); return { preapproved: R.preapproved }; }
       if (!x.text) return { error: 'text is required' };
       const ok = await askApproval(`Pre-approve${x.covers ? ` (${x.covers})` : ''} → sent automatically when ${x.to === 'ai1' ? label(0) : x.to === 'ai2' ? label(1) : 'either AI'} asks`, x.text);
-      if (!ok.ok) return DECLINED;
+      if (!ok.ok) return declined(ok);
       const id = R.preapproved.reduce((m, a) => Math.max(m, a.id), 0) + 1;
       R.preapproved.push({ id, text: ok.text, covers: x.covers || '', to: x.to || 'either' });
       autosave();
@@ -1503,6 +1503,7 @@ async function runTool(name, x) {
 }
 
 // Anything the moderator wants to send to the AIs waits for Justin's OK here
+let pendingApproval = null; // the approval card waiting for Send / Don't send
 function askApproval(title, text) {
   return new Promise((resolve) => {
     const box = $('#modChat');
@@ -1516,7 +1517,8 @@ function askApproval(title, text) {
     ta.rows = Math.min(12, Math.max(3, text.split('\n').length + 1));
     box.appendChild(d);
     box.scrollTop = 1e9;
-    const done = (ok) => {
+    const done = (ok, why) => {
+      if (pendingApproval === done) pendingApproval = null;
       const finalText = ta.value;
       // collapse to a one-line record; click it to see the text
       d.innerHTML = '<details><summary class="ap-title"></summary><div class="ap-body"></div></details>';
@@ -1525,13 +1527,15 @@ function askApproval(title, text) {
       d.classList.add(ok ? 'ok' : 'no');
       chatLog.push({ kind: 'tool', text: `${ok ? 'Approved' : 'Declined'}: ${title} — ${short(finalText, 200)}`, t: nowIso() });
       autosave();
-      resolve(ok ? { ok: true, text: finalText, edited: finalText !== text } : { ok: false });
+      resolve(ok ? { ok: true, text: finalText, edited: finalText !== text } : { ok: false, why });
     };
+    pendingApproval = done;
     $('.ap-ok', d).onclick = () => done(true);
     $('.ap-no', d).onclick = () => done(false);
   });
 }
 const DECLINED = { declined: true, note: 'Justin chose not to send this. Ask him what he wants instead.' };
+const declined = (ok) => ok && ok.why === 'new-message' ? { declined: true, note: 'Justin sent a new message instead of answering this card, so it was not sent. Read his new message and do what it asks.' } : DECLINED;
 
 const modHistory = [];
 let modBusy = false;
@@ -1617,11 +1621,20 @@ async function autoModerate(i, p) {
   const msg = `[Relay, automatic] ${aiName(i)} (AI ${i + 1}) paused in RESPONSE ${p.num || '?'} to ask Justin: "${short(p.userRequest, 600)}". It has nothing for the other AI. Check the pre-approvals. If one clearly covers this, send it (answer_questions with use_preapproval, to=ai${i + 1}, deliver_now=true, then relay_control on). If none clearly covers it, tell Justin in one line and wait.`;
   return moderatorSend(msg, { auto: true });
 }
+const modQueue = [];
 async function moderatorSend(text, opts = {}) {
-  if (modBusy || !text.trim()) return;
+  if (!text.trim()) return;
+  if (modBusy) {
+    if (opts.auto) return; // automatic checks don't pile up
+    modQueue.push(text);
+    modMsg('you', text);
+    if (pendingApproval) { modMsg('tool', 'Closed the approval card above (not sent) so your new message goes next.'); pendingApproval(false, 'new-message'); }
+    else modMsg('tool', 'The moderator is still finishing the last thing. Your message goes right after.');
+    return;
+  }
   if (!settings.apiKey) { modMsg('err', 'Add an Anthropic API key in ⚙ Settings to use the moderator.'); return; }
-  modBusy = true; $('#modSend').disabled = true;
-  if (opts.auto) modMsg('tool', 'Checking your pre-approvals'); else modMsg('you', text);
+  modBusy = true;
+  if (opts.auto) modMsg('tool', 'Checking your pre-approvals'); else if (!opts.queued) modMsg('you', text);
   modHistory.push({ role: 'user', content: text });
   try {
     for (let step = 0; step < 10; step++) {
@@ -1645,7 +1658,8 @@ async function moderatorSend(text, opts = {}) {
   } catch (e) {
     modMsg('err', e.message); cleanHistory();
   } finally {
-    modBusy = false; $('#modSend').disabled = false;
+    modBusy = false;
+    if (modQueue.length) { const next = modQueue.splice(0).join('\n\n'); setTimeout(() => moderatorSend(next, { queued: true }), 50); }
   }
 }
 

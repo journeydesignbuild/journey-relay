@@ -1,6 +1,6 @@
 {
-  "version": "1.11.5",
-  "notes": "ChatGPT: finds the input box and replies on its newer layout; taught and built-in input both tried. Debug report shows page details when a pane reads nothing.",
+  "version": "1.11.6",
+  "notes": "Moderator never ignores you: messages sent while it's busy wait their turn, a new message closes an unanswered approval card, and it gives up on a stuck API call after 3 minutes or a busy AI after 2.",
   "files": [
     "main.js",
     "preload.js",

@@ -200,6 +200,18 @@ module.exports = (win, app) => {
       await site(1, 'trackerStop(false); true');
       check('18. Stop button in a header/task tracker is ignored', r18.busy === false && (r18.busyIgnored || []).length > 0, JSON.stringify({ busy: r18.busy, why: r18.busyWhy, ignored: r18.busyIgnored }));
 
+      // ---- 19. Message typed while the moderator is busy is kept, and closes an open approval card ----
+      const r19 = await js(`(async () => {
+        modBusy = true;
+        const card = askApproval('Test card', 'hello');
+        await moderatorSend('Q-24 Maruta');
+        const res = await card;
+        const out = { queued: modQueue.slice(), cardClosed: res.ok === false && res.why === 'new-message', pendingCleared: pendingApproval === null, note: JSON.stringify(declined(res)).slice(0, 60) };
+        modQueue.length = 0; modBusy = false;
+        return out;
+      })()`);
+      check('19. Moderator busy: new message queued (not lost) and open card closed', r19.queued[0] === 'Q-24 Maruta' && r19.cardClosed && r19.pendingCleared, JSON.stringify(r19));
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

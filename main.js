@@ -289,12 +289,14 @@ ipcMain.handle('claude:call', async (_e, body) => {
         'x-api-key': s.apiKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180000) // never leave the moderator hanging
     });
     const data = await res.json();
     if (!res.ok) return { error: data?.error?.message || `API error ${res.status}` };
     return { data };
   } catch (err) {
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return { error: "The moderator didn't get an answer from Anthropic within 3 minutes. Try again." };
     return { error: String(err.message || err) };
   }
 });

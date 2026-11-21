@@ -1,6 +1,6 @@
 {
-  "version": "1.11.6",
-  "notes": "Moderator never ignores you: messages sent while it's busy wait their turn, a new message closes an unanswered approval card, and it gives up on a stuck API call after 3 minutes or a busy AI after 2.",
+  "version": "1.12.0",
+  "notes": "New Questions card above the moderator: what's needed to continue, open and later questions; answered or replaced ones disappear. Approval cards fit their text, never taller than the moderator chat, and scroll.",
   "files": [
     "main.js",
     "preload.js",

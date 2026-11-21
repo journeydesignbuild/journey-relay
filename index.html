@@ -40,6 +40,16 @@
       <div id="busyLine" class="busy-line idle">Safe to type in the chats.</div>
       <div id="deliveryLine" class="delivery-line">Nothing delivered yet in this session.</div>
 
+      <section id="qCard" class="qcard none" aria-label="Questions">
+        <button id="qBar" class="qbar" aria-expanded="false" type="button">
+          <svg class="qicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"></path><path d="M12 17h.01"></path></svg>
+          <span class="qtext"><span id="qTitle" class="qtitle">No open questions</span><span id="qSub" class="qsub"></span></span>
+          <span id="qBadge" class="qbadge hidden"></span>
+          <svg class="qchev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+        </button>
+        <div id="qList" class="qlist hidden"></div>
+      </section>
+
       <section class="card mod">
         <div class="row head">
           <strong>Moderator</strong>

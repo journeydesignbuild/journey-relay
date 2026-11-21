@@ -849,6 +849,7 @@ function block(why) {
 }
 function holdMessage(i, text, key, num, why) {
   if (!R.held.some((h) => h.key === key)) R.held.push({ key, from: i, num: num || '', text, at: nowIso(), why });
+  renderQuestions();
   note(`Held ${label(i)} RESPONSE ${num || '?'} (${why}). It has not been sent. Ask the moderator to send it, or to drop it.`, true);
   refreshDelivery();
   saveNow();
@@ -1145,7 +1146,7 @@ let statusTimer = null;
 function pushStatus() {
   clearTimeout(statusTimer);
   statusTimer = setTimeout(() => {
-    const openQ = questions.filter((q) => !q.answered);
+    const openQ = liveQuestions();
     const lastNote = [...chatLog].reverse().find((m) => m.kind === 'sys' || m.kind === 'sys warn');
     window.api.statusUpdate({
       session: session ? sessionTitle() : (R.task || 'Untitled session'),
@@ -1172,14 +1173,69 @@ function similarText(a, b) {
   return hit / Math.min(A.size, B.size) >= 0.6;
 }
 function addQuestion(i, num, text) {
-  const dup = questions.find((q) => !q.answered && q.from === i && similarText(q.text, text));
-  if (dup) { dup.text = text; dup.num = num; return; } // same question asked again: don't repeat it
-  const q = { id: questions.length + 1, from: i, ai: aiName(i), num, text, answered: false };
+  const dup = questions.find((q) => !q.answered && q.state !== 'dropped' && q.from === i && similarText(q.text, text));
+  if (dup) { dup.text = text; dup.num = num; dup.at = nowIso(); if (dup.state === 'later') dup.state = 'open'; renderQuestions(); return; } // same question asked again: don't repeat it
+  const q = { id: questions.length + 1, from: i, ai: aiName(i), num, text, answered: false, state: 'open', at: nowIso() };
   questions.push(q);
   modMsg('q', `Q${q.id} · ${q.ai} asks:\n${text}`);
-
+  renderQuestions();
+  dropSuperseded(q);
 }
-function renderQuestions() {}
+// Questions still on Justin's plate: not answered, not replaced
+const liveQuestions = () => questions.filter((q) => !q.answered && q.state !== 'dropped');
+function questionNeeded(q) {
+  if (R.waitingOn && R.waitingOn.from === q.from && String(R.waitingOn.num) === String(q.num)) return true;
+  return R.held.some((h) => h.from === q.from && String(h.num) === String(q.num) && /answer/i.test(h.why || ''));
+}
+// When an AI asks something new, retire older questions it replaces (cheap check with the summary model; event-driven, no polling)
+async function dropSuperseded(q) {
+  const older = liveQuestions().filter((o) => o.id !== q.id);
+  if (!older.length || !settings.apiKey) return;
+  try {
+    const res = await window.api.call({ model: settings.sumModel || 'claude-haiku-5-5', max_tokens: 200,
+      system: 'You tidy a list of open questions that two AIs asked a person. Reply with JSON only.',
+      messages: [{ role: 'user', content: `Open questions:\n${older.map((o) => `${o.id}. [${o.ai}] ${short(o.text, 400)}`).join('\n')}\n\nNew question from ${q.ai}:\n${short(q.text, 800)}\n\nWhich open questions does the new one repeat, cover, or make out of date? Only list ones that are clearly replaced; when unsure, leave it out. Reply exactly: {"replaced": [ids]}` }] });
+    const t = res && res.data ? res.data.content.filter((c) => c.type === 'text').map((c) => c.text).join('') : '';
+    const m = t.match(/\{[\s\S]*\}/); if (!m) return;
+    const ids = (JSON.parse(m[0]).replaced || []).map(Number);
+    let n = 0;
+    ids.forEach((id) => { const o = questions.find((x) => x.id === id && x.id !== q.id); if (o && !o.answered && o.state !== 'dropped') { o.state = 'dropped'; o.replacedBy = q.id; n++; } });
+    if (n) { renderQuestions(); autosave(); }
+  } catch (e) { recordError('Question tidy: ' + e.message); }
+}
+let qOpen = false;
+function renderQuestions() {
+  const card = $('#qCard'); if (!card) return;
+  const live = liveQuestions();
+  const needed = live.filter(questionNeeded);
+  const later = live.filter((q) => q.state === 'later' && !questionNeeded(q));
+  const open = live.filter((q) => q.state !== 'later' && !questionNeeded(q));
+  card.classList.toggle('needed', needed.length > 0);
+  card.classList.toggle('none', live.length === 0);
+  if (!live.length) qOpen = false;
+  card.classList.toggle('open', qOpen);
+  $('#qBar').setAttribute('aria-expanded', String(qOpen));
+  $('#qTitle').textContent = needed.length ? `Questions · ${needed.length} needed to continue` : open.length ? `Questions · ${open.length} open` : later.length ? `Questions · ${later.length} for later` : 'No open questions';
+  $('#qSub').textContent = needed.length || open.length ? [open.length && needed.length ? `${open.length} open` : '', later.length ? `${later.length} later` : '', needed.length ? 'relay waiting on you' : ''].filter(Boolean).join(' · ') : '';
+  const badge = $('#qBadge'); badge.classList.toggle('hidden', !needed.length); badge.textContent = needed.length;
+  const list = $('#qList'); list.classList.toggle('hidden', !qOpen);
+  if (!qOpen) return;
+  const item = (q, tag) => {
+    const d = document.createElement('article');
+    d.className = `qitem ${tag}`;
+    d.innerHTML = `<div class="qhead"><span class="qtag ${tag}"></span><span class="qnum"></span><span class="qwho ai${q.from}"></span><span class="qtime"></span></div><div class="qbody"></div>`;
+    $('.qtag', d).textContent = tag.toUpperCase();
+    $('.qnum', d).textContent = 'Q' + q.id;
+    $('.qwho', d).textContent = q.ai === 'CLAUDE' ? 'Claude' : q.ai === 'CHATGPT' ? 'ChatGPT' : q.ai;
+    $('.qtime', d).textContent = q.at ? fmtTime(q.at) : (q.num ? 'R' + q.num : '');
+    $('.qbody', d).textContent = q.text.replace(/^\s*Justin[,:]\s*/i, '');
+    d.title = 'Click to show all of it';
+    d.onclick = () => d.classList.toggle('full');
+    return d;
+  };
+  list.innerHTML = '';
+  [...needed.map((q) => item(q, 'needed')), ...open.slice().reverse().map((q) => item(q, 'open')), ...later.map((q) => item(q, 'later'))].forEach((d) => list.appendChild(d));
+}
 
 // ---------- Log ----------
 function addLog(e) {
@@ -1217,6 +1273,7 @@ function setPhase(t) {
   if (rp) rp.textContent = R.on ? `${t} · turn ${R.turn} of ${maxTurns()}` : "Replies aren't being copied.";
 }
 function updateControls() {
+  try { renderQuestions(); } catch {}
   const b = $('#relayBtn');
   b.textContent = R.on ? 'Stop' : 'Start';
   b.classList.toggle('stop', R.on);
@@ -1243,7 +1300,7 @@ async function summarize() {
   const res = await window.api.call({
     model: settings.sumModel, max_tokens: 250,
     system: 'Two AI assistants are working on a task for Justin; the app relays their replies between them. Write a short, plain statement of where things stand right now: 1 to 3 sentences, no headings, no bullets, no preamble. He reads it at a glance on the go.',
-    messages: [{ role: 'user', content: `Task: ${R.task || '(none)'}\n\nOpen questions for Justin: ${questions.filter((q) => !q.answered).map((q) => 'Q' + q.id + ' ' + short(q.text, 120)).join(' | ') || 'none'}\n\nTranscript:\n${transcript(40000, 4000)}` }]
+    messages: [{ role: 'user', content: `Task: ${R.task || '(none)'}\n\nOpen questions for Justin: ${liveQuestions().map((q) => 'Q' + q.id + ' ' + short(q.text, 120)).join(' | ') || 'none'}\n\nTranscript:\n${transcript(40000, 4000)}` }]
   });
   sumBusy = false;
   $('#sumState').textContent = '';
@@ -1302,6 +1359,8 @@ const MOD_TOOLS = [
       to: { type: 'string', enum: ['either', 'ai1', 'ai2'], description: 'Default either' },
       id: { type: 'integer' }
     }, required: ['action'] } },
+  { name: 'update_questions', description: "Change the status of questions on Justin's Questions card: later (he'll come back to it), dropped (no longer needed, or replaced by a newer question), open (bring it back), answered (he answered it outside the relay, so nothing needs sending). Answered and dropped ones disappear from the card.",
+    input_schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, status: { type: 'string', enum: ['later', 'dropped', 'open', 'answered'] } }, required: ['ids', 'status'] } },
   { name: 'set_options', description: 'Change relay options.',
     input_schema: { type: 'object', properties: { max_turns: { type: 'integer' }, pause_on_question: { type: 'boolean' } } } }
 ];
@@ -1319,8 +1378,8 @@ async function paneState(i) {
   return { pane: label(i), ai: aiName(i), working: !!(r2.busy || changing), stop_button_or_streaming: !!r2.busy, busy_because: r2.busyWhy || undefined, ignored_stop_buttons: (r2.busyIgnored || []).length ? r2.busyIgnored : undefined, text_still_changing: changing, latest_ends_with_END_OF_TURN: endsWithEot(r2.text || ''), already_handled: knownHas(i, msgKey(r2.text)) };
 }
 function modSystem() {
-  const openQ = questions.filter((q) => !q.answered);
-  const doneQ = questions.filter((q) => q.answered);
+  const openQ = liveQuestions();
+  const doneQ = questions.filter((q) => q.answered || q.state === 'dropped');
   return `You are the moderator inside "Journey Relay", Justin's desktop app that relays a conversation between two AI chat websites.
 AI 1 = ${aiName(0)} (${curUrl(panes[0])}). AI 2 = ${aiName(1)} (${curUrl(panes[1])}).
 
@@ -1334,6 +1393,7 @@ Your job: Justin messages you here, usually on the go. Keep replies short and pl
 - To pick up a conversation, use relay_latest from the side that spoke last. It refuses messages that were already delivered: never force a repeat unless Justin explicitly asks.
 - If the relay is blocked, explain the blocker in one or two plain sentences and ask Justin which single message should go next. Use delivery_status and resolve_delivery. Never replay a pile of held or duplicate messages.
 - Replies to your own side messages (send_to_pane) are not forwarded automatically.
+- Justin keeps a Questions card above this chat: it shows open questions, marks the ones the relay is waiting on as NEEDED, and hides answered or dropped ones. Keep it accurate: when he answers, mark the question ids in answer_questions; when he says "later" or "skip", or a question is clearly out of date or repeated, use update_questions.
 - Long messages may show up on a site as an attachment chip. To see what was sent, use read_sent.
 - Before sending anything or saying an AI is done, call check_panes. Never send to an AI that is still working, even if it already wrote END OF TURN.
 - Anything you send to the AIs (answers, your own messages, edits, a new task) shows Justin an approval card with the exact text, and nothing goes out until he clicks Send (he may edit it first). Just call the tool; don't ask for permission in text first. If he declines, ask what he'd like instead.
@@ -1351,7 +1411,7 @@ Pre-approvals: ${R.preapproved.length ? R.preapproved.map((a) => `#${a.id} [${a.
 Answers waiting to be delivered: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}
 
 Open questions:
-${openQ.map((q) => `Q${q.id} [${q.ai}, response ${q.num}]: ${q.text}`).join('\n') || '(none)'}
+${openQ.map((q) => `Q${q.id} [${q.ai}, response ${q.num}${questionNeeded(q) ? ', NEEDED: relay waiting on it' : q.state === 'later' ? ', later' : ''}]: ${q.text}`).join('\n') || '(none)'}
 Answered:
 ${doneQ.map((q) => `Q${q.id}: ${short(q.text, 100)}`).join('\n') || '(none)'}
 
@@ -1493,6 +1553,12 @@ async function runTool(name, x) {
       if (!e) return { error: 'No saved copy for that pane (only the last few deliveries are kept).' };
       return { from: label(e.from), response: e.num || '?', state: e.state, sent_at: e.queuedAt || e.capturedAt, text: e.out.slice(0, 20000) };
     }
+    case 'update_questions': {
+      const changed = [];
+      (x.ids || []).forEach((id) => { const q = questions.find((y) => y.id === id); if (!q) return; if (x.status === 'answered') q.answered = true; else { q.state = x.status; if (x.status === 'open') q.answered = false; } changed.push(id); });
+      renderQuestions(); autosave();
+      return { updated: changed, status: x.status };
+    }
     case 'set_options':
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
       if (typeof x.pause_on_question === 'boolean') $('#pauseOnQ').checked = x.pause_on_question;
@@ -1514,9 +1580,18 @@ function askApproval(title, text) {
     $('.ap-title', d).textContent = title;
     const ta = $('.ap-text', d);
     ta.value = text;
-    ta.rows = Math.min(12, Math.max(3, text.split('\n').length + 1));
     box.appendChild(d);
-    box.scrollTop = 1e9;
+    // As tall as the text needs, but never taller than the moderator chat; scrolls past that
+    const fit = () => {
+      if (!ta.isConnected) { window.removeEventListener('resize', fit); return; }
+      const room = Math.max(120, box.clientHeight - ($('.ap-title', d).offsetHeight + $('.btns', d).offsetHeight + 40));
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight + 2, room) + 'px';
+    };
+    fit(); requestAnimationFrame(fit);
+    ta.addEventListener('input', fit);
+    window.addEventListener('resize', fit);
+    d.scrollIntoView({ block: 'end' });
     const done = (ok, why) => {
       if (pendingApproval === done) pendingApproval = null;
       const finalText = ta.value;
@@ -1613,7 +1688,7 @@ function sanitizeHistory(h) {
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { read_sent: 'Read what was sent', preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
+const TOOL_LABEL = { update_questions: 'Updated questions', read_sent: 'Read what was sent', preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
 // An AI paused to ask Justin something; if he pre-approved a next step, let the moderator check and send it
 async function autoModerate(i, p) {
   if (window.__autoMod) return window.__autoMod(i, p); // test hook
@@ -1757,7 +1832,7 @@ function exportTranscript() {
 function newSession() {
   if (R.busy) { note('Wait a moment: the relay is sending.', true); return; }
   session = null; chatLog.length = 0; $('#task').value = '';
-  logEntries.length = 0; questions.length = 0; summaryText = ''; modHistory.length = 0;
+  logEntries.length = 0; questions.length = 0; qOpen = false; setTimeout(renderQuestions, 0); summaryText = ''; modHistory.length = 0;
   R.turn = 0; R.task = ''; R.queued = [[], []]; R.preapproved = []; R.lastFrom = null; R.introduced = [false, false];
   R.seen = ['', '']; R.rebase = [true, true];
   R.ledger = []; R.inflight = null; R.known = [[], []]; R.held = []; R.blocker = '';
@@ -1797,7 +1872,7 @@ async function debugReport() {
   lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);
   lines.push(`Relay: ${relayStatus()}
 Safe for Justin to type in the chats: ${isBusy() ? 'NO (an AI is working or the relay is sending)' : 'yes'} · task: ${short(R.task, 120) || '(none)'}`);
-  lines.push(`Questions: ${questions.length} (${questions.filter((q) => !q.answered).length} open) · queued answers: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}`);
+  lines.push(`Questions: ${questions.length} (${liveQuestions().length} open) · queued answers: AI 1 ${R.queued[0].length}, AI 2 ${R.queued[1].length}`);
   lines.push(`Settings: stable ${settings.stableSec}s · no-marker ${settings.fallbackSec}s · timeout ${settings.timeoutMin}m · API key ${settings.apiKey ? 'set' : 'MISSING'} · models ${settings.modModel} / ${settings.sumModel}`);
   lines.push('', 'Recent errors:', ...(errors.length ? errors.slice(-20) : ['(none)']));
   lines.push('', 'Last log entries:', ...logEntries.slice(-8).map((e) => `  ${e.kind} · ${e.who}${e.to ? ' → ' + e.to : ''}: ${short(e.text, 160)}`));
@@ -1886,6 +1961,7 @@ function applySession(j, loadUrls) {
   const fl0 = inflight();
   if (fl0 && fl0.state === 'queued') fl0.state = 'uncertain'; // stopped mid-delivery: check before resending
   questions.length = 0; (j.questions || []).forEach((q) => questions.push(q));
+  qOpen = false; setTimeout(renderQuestions, 0);
   logEntries.length = 0; (j.logEntries || []).forEach((e) => logEntries.push({ ...e, time: new Date(e.time) }));
   summaryText = j.summaryText || ''; renderSummary();
   modHistory.length = 0; (j.modHistory || []).forEach((m) => modHistory.push(m));
@@ -1974,6 +2050,7 @@ async function init() {
   $('#filesBtn').title = "Open this session's folder in Google Drive (right-click: local backup copies)";
   $('#sessionBar').onclick = () => window.__setMenu(true);
   $('#newBtn').onclick = () => { window.__setMenu(false); newSession(); };
+  $('#qBar').addEventListener('click', () => { if (!liveQuestions().length) return; qOpen = !qOpen; renderQuestions(); });
   $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; if (window.__growMod) window.__growMod(); moderatorSend(t); });
   const mi = $('#modInput');
   const grow = () => {

@@ -212,6 +212,45 @@ module.exports = (win, app) => {
       })()`);
       check('19. Moderator busy: new message queued (not lost) and open card closed', r19.queued[0] === 'Q-24 Maruta' && r19.cardClosed && r19.pendingCleared, JSON.stringify(r19));
 
+      // ---- 20. Questions card: needed first, answered and replaced ones hidden ----
+      const r20 = await js(`(async () => {
+        const realKey = settings.apiKey; settings.apiKey = ''; // no API in tests: skip the tidy call
+        questions.length = 0; R.held = []; R.waitingOn = null;
+        addQuestion(1, '024', 'Justin: millwork, does Journey build it or Maruta Makes?');
+        addQuestion(1, '025', 'Justin: do the fence, bench and water feature count inside the $180k landscape allowance?');
+        addQuestion(0, '004', 'Approve the draft request to Bronte? It will not be sent without your OK.');
+        addQuestion(1, '026', 'Justin: which of the six email drafts are approved?');
+        R.waitingOn = { from: 1, num: '025' };
+        qOpen = true; renderQuestions();
+        const a = { title: $('#qTitle').textContent, items: [...document.querySelectorAll('#qList .qitem')].map(d => d.querySelector('.qtag').textContent + ' ' + d.querySelector('.qnum').textContent) };
+        await runTool('update_questions', { ids: [3], status: 'dropped' });
+        questions[0].answered = true; renderQuestions();
+        const b = { title: $('#qTitle').textContent, items: [...document.querySelectorAll('#qList .qitem')].map(d => d.querySelector('.qtag').textContent + ' ' + d.querySelector('.qnum').textContent) };
+        settings.apiKey = realKey;
+        return { a, b };
+      })()`);
+      await sleep(300);
+      try { const img = await win.capturePage(); require('fs').writeFileSync('/tmp/qcard.png', img.toPNG()); } catch (e) {}
+      check('20. Questions card: needed first, answered/dropped hidden', /1 needed/.test(r20.a.title) && r20.a.items[0] === 'NEEDED Q2' && r20.a.items.length === 4 && r20.b.items.length === 2 && !r20.b.items.some(t => /Q1|Q3/.test(t)), JSON.stringify(r20));
+
+      // ---- 21. Approval card: fits its text, never taller than the moderator chat, scrolls ----
+      const r21 = await js(`(async () => {
+        const short1 = askApproval('Short', 'one line');
+        await new Promise(r => setTimeout(r, 100));
+        const cards = document.querySelectorAll('.m.approve textarea');
+        const s = cards[cards.length - 1].offsetHeight;
+        pendingApproval(false); await short1;
+        const long1 = askApproval('Long', Array.from({ length: 200 }, (_, k) => 'line ' + k).join('\\n'));
+        await new Promise(r => setTimeout(r, 100));
+        const t = [...document.querySelectorAll('.m.approve textarea')].pop();
+        const out = { shortH: s, longH: t.offsetHeight, chatH: $('#modChat').clientHeight, scrolls: t.scrollHeight > t.clientHeight };
+        const shot = 1;
+        return out;
+      })()`);
+      try { const img = await win.capturePage(); require('fs').writeFileSync('/tmp/approve.png', img.toPNG()); } catch (e) {}
+      await js('pendingApproval && pendingApproval(false); true');
+      check('21. Approval card fits text, capped at the moderator height, scrolls', r21.shortH < 120 && r21.longH <= r21.chatH && r21.scrolls, JSON.stringify(r21));
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

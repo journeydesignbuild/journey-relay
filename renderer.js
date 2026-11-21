@@ -1204,6 +1204,15 @@ async function dropSuperseded(q) {
   } catch (e) { recordError('Question tidy: ' + e.message); }
 }
 let qOpen = false;
+// Expanded card = about half of the space from the card down to the bottom of the moderator
+function sizeQuestions() {
+  const card = $('#qCard'), list = $('#qList'), side = $('#side');
+  if (!card || !list || !side || !qOpen) return;
+  const top = card.getBoundingClientRect().top, bottom = side.getBoundingClientRect().bottom;
+  const bar = $('#qBar').offsetHeight;
+  list.style.height = Math.max(160, Math.round((bottom - top) / 2 - bar)) + 'px';
+}
+window.addEventListener('resize', () => { try { sizeQuestions(); } catch {} });
 function renderQuestions() {
   const card = $('#qCard'); if (!card) return;
   const live = liveQuestions();
@@ -1220,6 +1229,7 @@ function renderQuestions() {
   const badge = $('#qBadge'); badge.classList.toggle('hidden', !needed.length); badge.textContent = needed.length;
   const list = $('#qList'); list.classList.toggle('hidden', !qOpen);
   if (!qOpen) return;
+  sizeQuestions();
   const item = (q, tag) => {
     const d = document.createElement('article');
     d.className = `qitem ${tag}`;

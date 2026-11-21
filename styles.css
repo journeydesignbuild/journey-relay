@@ -61,7 +61,7 @@ textarea { resize: vertical; width: 100%; }
 .sumgrid { display: grid; grid-template-columns: 70px 1fr; gap: 4px 10px; }
 .sumgrid .k { color: #9AA1AB; }
 
-#qList { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+/* (old #qList rule removed: the Questions card sizes itself) */
 .q { padding: 6px 8px; border-radius: 6px; background: #1C2026; }
 .q .meta { font-size: 11px; color: #9AA1AB; font-weight: 600; }
 .q.open .meta { color: #F2A766; }
@@ -218,7 +218,7 @@ dialog h3 { margin: 0; }
 .qcard.needed .qsub { color: #C7A58A; }
 .qcard.none .qbar { cursor: default; }
 .qcard.none .qchev, .qcard.none .qicon { opacity: .4; }
-.qlist { max-height: 38vh; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.qlist { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .qlist::-webkit-scrollbar { width: 6px; }
 .qlist::-webkit-scrollbar-thumb { background: #3A404A; border-radius: 6px; }
 .qitem { padding: 8px 10px; border-radius: 8px; background: #1C1F25; border: 1px solid #2A2F37; cursor: pointer; }
@@ -235,3 +235,5 @@ dialog h3 { margin: 0; }
 .qtag.later { background: #262A31; color: #AEB4BD; }
 .qbody { line-height: 1.45; font-size: 13.5px; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .qitem.full .qbody { display: block; -webkit-line-clamp: unset; }
+
+.qcard.open + .card.mod { min-height: 0; }

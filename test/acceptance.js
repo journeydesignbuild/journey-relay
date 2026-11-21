@@ -227,11 +227,13 @@ module.exports = (win, app) => {
         questions[0].answered = true; renderQuestions();
         const b = { title: $('#qTitle').textContent, items: [...document.querySelectorAll('#qList .qitem')].map(d => d.querySelector('.qtag').textContent + ' ' + d.querySelector('.qnum').textContent) };
         settings.apiKey = realKey;
-        return { a, b };
+        const top = $('#qCard').getBoundingClientRect().top, bottom = $('#side').getBoundingClientRect().bottom;
+        const half = { card: Math.round($('#qCard').getBoundingClientRect().height), space: Math.round(bottom - top), set: $('#qList').style.height, got: $('#qList').offsetHeight, bar: $('#qBar').offsetHeight };
+        return { a, b, half };
       })()`);
       await sleep(300);
       try { const img = await win.capturePage(); require('fs').writeFileSync('/tmp/qcard.png', img.toPNG()); } catch (e) {}
-      check('20. Questions card: needed first, answered/dropped hidden', /1 needed/.test(r20.a.title) && r20.a.items[0] === 'NEEDED Q2' && r20.a.items.length === 4 && r20.b.items.length === 2 && !r20.b.items.some(t => /Q1|Q3/.test(t)), JSON.stringify(r20));
+      check('20. Questions card: needed first, answered/dropped hidden', /1 needed/.test(r20.a.title) && r20.a.items[0] === 'NEEDED Q2' && r20.a.items.length === 4 && r20.b.items.length === 2 && !r20.b.items.some(t => /Q1|Q3/.test(t)) && Math.abs(r20.half.card - r20.half.space / 2) < 20, JSON.stringify(r20));
 
       // ---- 21. Approval card: fits its text, never taller than the moderator chat, scrolls ----
       const r21 = await js(`(async () => {

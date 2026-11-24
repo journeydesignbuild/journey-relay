@@ -179,14 +179,19 @@ async function gfetch(url, opts = {}) {
 }
 async function findFolder(name, parent) {
   const q = encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${parent}' in parents`);
-  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=20`)).json();
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
   return j.files || [];
 }
 async function locate() {
   if (ids.remote) return;
-  for (const f of await findFolder('Journey Relay', 'root')) {
-    const r = await findFolder('_remote', f.id);
-    if (r.length) { ids.remote = r[0].id; const ib = await findFolder('inbox', r[0].id); ids.inbox = ib[0] && ib[0].id; return; }
+  // the relay's folder can be in My Drive or a Shared drive: find every _remote folder and keep the newest one inside "Journey Relay"
+  const q = encodeURIComponent("name='_remote' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,parents,modifiedTime)&orderBy=modifiedTime desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
+  for (const f of j.files || []) {
+    const par = (f.parents || [])[0]; if (!par) continue;
+    const pj = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${par}?fields=name&supportsAllDrives=true`)).json();
+    if (pj.name !== 'Journey Relay') continue;
+    ids.remote = f.id; const ib = await findFolder('inbox', f.id); ids.inbox = ib[0] && ib[0].id; return;
   }
   throw new Error('noremote');
 }
@@ -194,11 +199,11 @@ const modTimes = {};
 async function refreshDrive() {
   await locate();
   const q = encodeURIComponent(`'${ids.remote}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`);
-  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&pageSize=100`)).json();
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
   for (const f of j.files || []) {
     if (!/^win-.*\.json$|^pc\.json$/.test(f.name) || modTimes[f.id] === f.modifiedTime) continue;
     try {
-      const data = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json();
+      const data = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`)).json();
       modTimes[f.id] = f.modifiedTime;
       if (f.name === 'pc.json') store.pc = data; else if (data && data.id) store.wins[data.id] = data;
     } catch (e) { if (e.message === 'signin') throw e; }
@@ -212,7 +217,7 @@ async function sendDrive(cmd) {
   const meta = JSON.stringify({ name, parents: [ids.inbox], mimeType: 'application/json' });
   const data = JSON.stringify({ ...cmd, at: new Date().toISOString() });
   const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${data}\r\n--${boundary}--`;
-  await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
+  await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
   return name;
 }
 

@@ -1942,7 +1942,9 @@ function openSettings() {
     const sel = $('#sDrive');
     sel.innerHTML = (roots.length ? '' : '<option value="">Google Drive for desktop not found</option>') +
       roots.map((r) => `<option value="${esc(r.path)}">${esc(r.path)}  (${esc(r.sample.join(', ') || 'empty')}…)</option>`).join('');
-    sel.value = settings.driveFolder || cur;
+    const want = settings.driveFolder || cur;
+    if (want && !roots.some((r) => r.path === want)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(want)}">${esc(want)}</option>`);
+    sel.value = want;
     sel.dataset.was = cur;
   });
   $('#sToken').value = settings.githubToken || '';
@@ -2227,6 +2229,12 @@ async function init() {
   $('#sessionBar').onclick = () => window.__setMenu(true);
   $('#newBtn').onclick = () => { window.__setMenu(false); newSession(); };
   window.api.onRemote(handleRemote);
+  $('#sDriveBrowse').addEventListener('click', async () => {
+    const f = await window.api.driveBrowse(); if (!f) return;
+    const sel = $('#sDrive');
+    if (![...sel.options].some((o) => o.value === f)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(f)}">${esc(f)}</option>`);
+    sel.value = f;
+  });
   $('#qBar').addEventListener('click', () => { if (!liveQuestions().length) return; qOpen = !qOpen; renderQuestions(); });
   $('#modForm').addEventListener('submit', (e) => { e.preventDefault(); const t = $('#modInput').value; $('#modInput').value = ''; if (window.__growMod) window.__growMod(); moderatorSend(t); });
   const mi = $('#modInput');

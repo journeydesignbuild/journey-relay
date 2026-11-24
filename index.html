@@ -122,7 +122,7 @@
         <label class="field">Give up after (min) <input id="sTimeout" type="number" min="1" /></label>
       </div>
       <label class="field">Google Drive for sessions and shared files
-        <select id="sDrive"></select>
+        <span style="display:flex;gap:6px"><select id="sDrive" style="flex:1;min-width:0"></select><button type="button" id="sDriveBrowse">Browse…</button></span>
       </label>
       <label class="check"><input type="checkbox" id="sRemote" /> Phone remote: show these relays on your phone or another device, and take messages from it (through Google Drive)</label>
       <div class="grid2">

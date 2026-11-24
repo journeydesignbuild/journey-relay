@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   driveSet: (folder) => ipcRenderer.invoke('drive:set', folder),
   driveInfo: () => ipcRenderer.invoke('drive:info'),
   driveList: () => ipcRenderer.invoke('drive:list'),
+  driveBrowse: () => ipcRenderer.invoke('drive:browse'),
   driveMove: (o) => ipcRenderer.invoke('drive:move', o),
   host: () => ipcRenderer.invoke('app:host'),
   statusUpdate: (st) => ipcRenderer.invoke('status:update', st),

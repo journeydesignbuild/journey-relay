@@ -1,5 +1,5 @@
 // Journey Relay — main process
-const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, Menu, WebContentsView, shell, dialog } = require('electron');
 const os = require('os');
 const crypto = require('crypto');
 const path = require('path');
@@ -390,6 +390,12 @@ function allDriveRoots() {
   });
 }
 ipcMain.handle('drive:list', () => allDriveRoots());
+// Any folder: a Shared drive, a subfolder, a Drive set up as a regular folder…
+ipcMain.handle('drive:browse', async (e) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  const r = await dialog.showOpenDialog(w, { title: 'Choose the Google Drive folder for Journey Relay', properties: ['openDirectory'] });
+  return r.canceled || !r.filePaths[0] ? '' : r.filePaths[0];
+});
 // Switching accounts: copy the relay's sessions and files to the new Drive (never overwriting)
 ipcMain.handle('drive:move', (_e, { from, to }) => {
   try {

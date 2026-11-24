@@ -1,6 +1,6 @@
 {
-  "version": "1.14.0",
-  "notes": "Permission prompts (connect Supabase, allow a tool\u2026) are spotted in either pane: shown as a card and on your phone with Allow / Deny. Never clicked without you.",
+  "version": "1.14.1",
+  "notes": "Settings: Browse\u2026 to pick any Google Drive folder, including Shared drives. Phone remote works with a Shared drive too.",
   "files": [
     "main.js",
     "preload.js",

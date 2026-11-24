@@ -1,6 +1,6 @@
 {
-  "version": "1.15.0",
-  "notes": "Every relayed message ends with a one-line format reminder. If an AI finishes but its answer isn't in relay format (often a document), the relay asks it once to repost in the chat and shows it in the status.",
+  "version": "1.16.0",
+  "notes": "Shared Docs folder: the AIs put long documents in a Google Drive folder as Google Docs and pass the link; set or change it in Settings.",
   "files": [
     "main.js",
     "preload.js",

@@ -138,6 +138,7 @@ const DEFAULTS = {
   githubToken: '',
   auto: true,
   remote: false,
+  sharedDocs: 'https://drive.google.com/drive/folders/14Uc4evSA9LNWTanbmMdm5uBhTvfP7T5T',
   driveFolder: ''
 };
 

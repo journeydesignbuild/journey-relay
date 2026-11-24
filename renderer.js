@@ -787,9 +787,12 @@ function hopContent(parsed) {
 }
 
 // One line on every relayed message: long chats forget the rules, and chat apps like to put long work in a document
-const reminder = (to) => `\n\n(Relay: reply here in the chat, in plain text, as ${aiName(to)} RESPONSE … END OF TURN. No documents, artifacts or canvas: ${aiName(1 - to)} only gets chat text.)`;
+const reminder = (to) => settings.sharedDocs
+  ? `\n\n(Relay: reply here in the chat, in plain text, as ${aiName(to)} RESPONSE … END OF TURN. Long documents go in the Shared Docs folder as Google Docs, with the link in your reply. No artifacts or canvas.)`
+  : `\n\n(Relay: reply here in the chat, in plain text, as ${aiName(to)} RESPONSE … END OF TURN. No documents, artifacts or canvas: ${aiName(1 - to)} only gets chat text.)`;
+const docsRule = (i) => settings.sharedDocs ? `\n\nShared documents:\n- For anything long (a spec, a review, a plan), create a Google Doc in this Google Drive folder with your Google Drive connector: ${settings.sharedDocs}\n- Put the doc's link in your response, with a short summary of what's in it and what changed. ${aiName(1 - i)} opens the same doc and works on it there.\n- If you can read the doc but can't edit it, write your changes in your response and ${aiName(1 - i)} will apply them.\n- Still use the RESPONSE format in the chat: the relay only passes chat text. Never use canvas, artifacts or downloads.` : '';
 function intro(i) {
-  const rules = settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i));
+  const rules = settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i)) + docsRule(i);
   return R.task ? rules + '\n\nTASK:\n' + R.task : rules;
 }
 
@@ -1463,7 +1466,7 @@ const MOD_TOOLS = [
   { name: 'update_questions', description: "Change the status of questions on Justin's Questions card: later (he'll come back to it), dropped (no longer needed, or replaced by a newer question), open (bring it back), answered (he answered it outside the relay, so nothing needs sending). Answered and dropped ones disappear from the card.",
     input_schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, status: { type: 'string', enum: ['later', 'dropped', 'open', 'answered'] } }, required: ['ids', 'status'] } },
   { name: 'set_options', description: 'Change relay options.',
-    input_schema: { type: 'object', properties: { max_turns: { type: 'integer' }, pause_on_question: { type: 'boolean' } } } }
+    input_schema: { type: 'object', properties: { shared_docs: { type: 'string', description: 'Google Drive folder link where the AIs put long documents (empty string turns it off)' },  max_turns: { type: 'integer' }, pause_on_question: { type: 'boolean' } } } }
 ];
 
 function relayStatus() {
@@ -1661,6 +1664,7 @@ async function runTool(name, x) {
       return { updated: changed, status: x.status };
     }
     case 'set_options':
+      if (typeof x.shared_docs === 'string') { settings.sharedDocs = x.shared_docs.trim(); saveSettings(); }
       if (x.max_turns) $('#maxTurns').value = x.max_turns;
       if (typeof x.pause_on_question === 'boolean') $('#pauseOnQ').checked = x.pause_on_question;
       updateControls();
@@ -1861,7 +1865,7 @@ async function checkFormatStall(fl, r) {
     note(`${who} looks finished, but its answer didn't come back in relay format (it may have gone into a document). Asking ${who} once to repost it in the chat.`, false);
     pushStatus();
     try {
-      await sendOnly(fl.to, `Relay: your answer to ${aiName(fl.from)} RESPONSE ${fl.num || ''} didn't come through. It may have gone into a document, artifact or canvas, which the relay can't read. Please post it again here in the chat as plain text:\n\n${aiName(fl.to)} RESPONSE START … END\n${aiName(fl.to)} REQUESTS ${aiName(fl.from)}\nUSER REQUEST\nEND OF TURN`, [], 120000);
+      await sendOnly(fl.to, `Relay: your answer to ${aiName(fl.from)} RESPONSE ${fl.num || ''} didn't come through. It may have gone into a document, artifact or canvas, which the relay can't read. Please post it again here in the chat as plain text${settings.sharedDocs ? ' (a link to a Google Doc in the Shared Docs folder is fine)' : ''}:\n\n${aiName(fl.to)} RESPONSE START … END\n${aiName(fl.to)} REQUESTS ${aiName(fl.from)}\nUSER REQUEST\nEND OF TURN`, [], 120000);
     } catch (e) { recordError('Format nudge: ' + e.message); }
     return;
   }
@@ -1986,6 +1990,7 @@ function openSettings() {
   });
   $('#sToken').value = settings.githubToken || '';
   $('#sRemote').checked = !!settings.remote;
+  $('#sSharedDocs').value = settings.sharedDocs || '';
   $('#settingsErr').textContent = '';
   setPanesVisible(false);
   $('#settings').showModal();
@@ -2016,7 +2021,8 @@ async function submitSettings(e) {
     adapters,
     updateRepo: $('#sRepo').value.trim() || settings.updateRepo,
     githubToken: $('#sToken').value.trim(),
-    remote: $('#sRemote').checked
+    remote: $('#sRemote').checked,
+    sharedDocs: $('#sSharedDocs').value.trim()
   });
   if (settings.remote) { window.api.remoteHeartbeat(); pushStatus(); }
   await window.api.saveSettings(settings);

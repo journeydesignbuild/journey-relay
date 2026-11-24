@@ -326,8 +326,8 @@ module.exports = (win, app) => {
       const relayed25 = await (async () => { const t0 = Date.now(); while (Date.now() - t0 < 40000) { if ((await recv(0)) > a25) return true; await sleep(500); } return false; })();
       await js('settings.stallMin = 999; true');
       check('25. Reminder on each relay; no-format reply nudged once; real answer then relayed',
-        got25 && /No documents, artifacts or canvas/.test(lastIn25) && nudged25 && /relay can't read/.test(nudgeText) && /didn't use the relay format/.test(st25) && relayed25,
-        JSON.stringify({ got25, reminder: /No documents/.test(lastIn25), nudged25, nudge: nudgeText.slice(0, 60), st25, relayed25 }));
+        got25 && /No (documents, )?artifacts or canvas/.test(lastIn25) && /Shared Docs folder/.test(lastIn25) && /drive\.google\.com\/drive\/folders/.test(await js('intro(1)')) && nudged25 && /relay can't read/.test(nudgeText) && /didn't use the relay format/.test(st25) && relayed25,
+        JSON.stringify({ got25, reminder: lastIn25.slice(-160), nudged25, nudge: nudgeText.slice(0, 60), st25, relayed25 }));
 
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);

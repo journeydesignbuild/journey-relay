@@ -1,6 +1,6 @@
 {
-  "version": "1.16.0",
-  "notes": "Shared Docs folder: the AIs put long documents in a Google Drive folder as Google Docs and pass the link; set or change it in Settings.",
+  "version": "1.17.0",
+  "notes": "Relay Doctor: one button (and automatic after 10 quiet minutes) checks why the relay stopped and offers one-tap fixes, on the PC and your phone.",
   "files": [
     "main.js",
     "preload.js",

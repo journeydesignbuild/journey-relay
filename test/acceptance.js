@@ -25,7 +25,7 @@ module.exports = (win, app) => {
       await js(`
         settings.adapters['localhost:8001'] = { name: 'a', input: '#box', reply: '.bot', send: '#send', busy: '#stop', user: '.user' };
         settings.adapters['localhost:8002'] = { name: 'b', input: '#box', reply: '.bot', send: '', busy: '#stop', user: '.user' };
-        settings.fallbackSec = 6; settings.stableSec = 2; settings.driveFolder = '/tmp/fakedrive/My Drive'; settings.stallMin = 999;
+        settings.fallbackSec = 6; settings.stableSec = 2; settings.driveFolder = '/tmp/fakedrive/My Drive'; settings.stallMin = 999; settings.doctorMin = 999;
         saveSettings();
         panes[0].wv.loadURL('http://localhost:8001'); panes[1].wv.loadURL('http://localhost:8002');
         panes[0].nameInput.value = 'ALPHA'; panes[1].nameInput.value = 'BETA';
@@ -328,6 +328,33 @@ module.exports = (win, app) => {
       check('25. Reminder on each relay; no-format reply nudged once; real answer then relayed',
         got25 && /No (documents, )?artifacts or canvas/.test(lastIn25) && /Shared Docs folder/.test(lastIn25) && /drive\.google\.com\/drive\/folders/.test(await js('intro(1)')) && nudged25 && /relay can't read/.test(nudgeText) && /didn't use the relay format/.test(st25) && relayed25,
         JSON.stringify({ got25, reminder: lastIn25.slice(-160), nudged25, nudge: nudgeText.slice(0, 60), st25, relayed25 }));
+
+      // ---- 26. Relay Doctor: finds the cause, fix from the phone works, stuck reader spotted, auto-run ----
+      const r26 = await js(`(async () => {
+        R.inflight = null; R.held = []; R.blocker = ''; R.perm = [null, null]; R.formatStall = null;
+        setRelay(false);
+        let d = await runDoctor(false);
+        const off = d.findings.find((f) => f.area === 'Relay state');
+        const fix = off && off.fixes.find((x) => x.label === 'Turn on');
+        handleRemote({ type: 'doctorFix', fix: fix && fix.id });
+        await new Promise((r) => setTimeout(r, 800));
+        const onAfter = R.on;
+        // reader lost track: page changing, reply not
+        keyChangedAt[1] = Date.now() - 5 * 60000; pageChangedAt[1] = Date.now() - 5000; working[1] = false;
+        d = await runDoctor(false);
+        const stuck = d.findings.find((f) => f.area.startsWith('Reading') && /same old reply/.test(f.text));
+        keyChangedAt[1] = Date.now(); pageChangedAt[1] = 0;
+        // auto-run after nothing moves
+        R.blocker = 'test stop'; settings.doctorMin = 0.02; lastActivity = Date.now() - 5000; doctorShownFor = 0; doctor = null;
+        await new Promise((r) => setTimeout(r, 6000));
+        const auto = doctor && doctor.auto;
+        const cardShown = !$('#docCard').classList.contains('hidden');
+        const st = remoteState().title;
+        settings.doctorMin = 999; R.blocker = '';
+        return { offFound: !!off, fixId: !!fix, onAfter, stuck: stuck && stuck.text, stuckFixes: stuck && stuck.fixes.map((x) => x.label), auto, cardShown, st };
+      })()`);
+      check('26. Relay Doctor: cause found, phone fix applied, stuck reader spotted, auto-run shows card',
+        r26.offFound && r26.fixId && r26.onAfter && !!r26.stuck && r26.stuckFixes.includes('Teach') && r26.auto && r26.cardShown && /Doctor found why/.test(r26.st), JSON.stringify(r26));
 
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);

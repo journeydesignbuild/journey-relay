@@ -294,6 +294,7 @@ function pgPermClick(label) { // runs inside the chat page: must stand alone
   b.click();
   return { ok: true };
 }
+function pgSig() { const m = document.querySelector('main') || document.body; return (m.textContent || '').length; }
 function pgKeyEnter(sel) {
   const vis = (e) => e.getClientRects().length > 0;
   let el; try { el = [...document.querySelectorAll(sel)].filter(vis).pop(); } catch (e) { return false; }
@@ -804,6 +805,7 @@ function setRelay(on, why) {
   if (on === R.on) { updateControls(); return; }
   R.on = on;
   if (on) {
+    lastActivity = Date.now(); doctorShownFor = 0;
     R.waitingOn = null;
     R.turn = 0; R.complete = [false, false]; stab[0] = stab[1] = null;
     R.blocker = '';
@@ -864,6 +866,7 @@ async function saveNow() {
   try { await window.api.saveSession(snapshot()); } catch {}
 }
 function setState(e, st, extra = {}) {
+  lastActivity = Date.now();
   e.state = st;
   e[st + 'At'] = nowIso();
   Object.assign(e, extra);
@@ -900,6 +903,10 @@ let ticking = false; // one check at a time, so a reply can never be sent twice
 const working = [false, false];
 const lastKey = ['', ''];
 const lastWorkAt = [0, 0]; // when each AI was last seen working
+const keyChangedAt = [Date.now(), Date.now()];   // when the reply we read last changed
+const pageChangedAt = [0, 0];                     // when the page's text last changed
+const pageSig = [-1, -1];
+let lastActivity = Date.now();                    // anything moving at all (for the Doctor's auto-run)
 async function tick() {
   if (R.busy || ticking) return;
   ticking = true;
@@ -930,11 +937,14 @@ async function tickOnce() {
     reads[i] = r;
     if (!r) continue;
     try { await checkPerm(i); } catch {}
+    try { const sg = await run(panes[i], pgSig); if (sg !== pageSig[i]) { if (pageSig[i] >= 0) pageChangedAt[i] = Date.now(); pageSig[i] = sg; } } catch {}
+    if (r.key !== lastKey[i]) { keyChangedAt[i] = Date.now(); lastActivity = Date.now(); }
     const w = !!r.busy || (r.key !== lastKey[i] && !!lastKey[i]);
     if (w) lastWorkAt[i] = Date.now();
     lastKey[i] = r.key;
     if (w !== working[i]) { working[i] = w; refreshBusy(); }
   }
+  maybeAutoDoctor();
   if (!R.on) return;
   const fl = inflight();
   // 1) An unconfirmed delivery is resolved by looking at the destination before anything else happens
@@ -1210,6 +1220,8 @@ function remoteState() {
   const needed = liveQuestions().filter(questionNeeded);
   const pi = [0, 1].find((i) => R.perm[i]);
   if (pi !== undefined) return { kind: 'waiting', title: `${aiName(pi) === 'CLAUDE' ? 'Claude' : aiName(pi) === 'CHATGPT' ? 'ChatGPT' : aiName(pi)} needs your permission`, detail: short(R.perm[pi].text.split('\n')[0], 120), since: R.perm[pi].since };
+  const dtop = doctor && doctor.auto && doctorShownFor === lastActivity && doctor.findings.find((f) => f.level === 'problem');
+  if (dtop) return { kind: 'waiting', title: 'Stopped · Doctor found why', detail: dtop.text, since: doctor.at };
   if (R.blocker) return { kind: 'blocked', title: 'Blocked', detail: R.blocker };
   if (R.formatStall) { const w = aiName(R.formatStall.to) === 'CLAUDE' ? 'Claude' : aiName(R.formatStall.to) === 'CHATGPT' ? 'ChatGPT' : aiName(R.formatStall.to); return { kind: 'waiting', title: `${w} didn't use the relay format`, detail: `Asked ${w} to repost its answer in the chat`, since: R.formatStall.at }; }
   if (isBusy()) {
@@ -1230,6 +1242,7 @@ function remoteSnapshot() {
     questions: liveQuestions().map((q) => ({ id: q.id, from: q.from, ai: q.ai, text: q.text, at: q.at || '', needed: questionNeeded(q), later: q.state === 'later' })),
     chat: chatLog.slice(-40).map((m) => ({ kind: m.kind, text: short(m.text, 2000), t: m.t })),
     approval: card ? { id: card.id, title: card.title, text: card.text } : null,
+    doctor: doctor ? { at: doctor.at, auto: doctor.auto, findings: doctor.findings.map((f) => ({ level: f.level, area: f.area, text: f.text, detail: short(f.detail || '', 400), fixes: f.fixes })) } : null,
     perms: [0, 1].filter((i) => R.perm[i]).map((i) => ({ pane: i, ai: aiName(i), text: R.perm[i].text, buttons: R.perm[i].buttons, sig: R.perm[i].sig, since: R.perm[i].since })),
     acks: remoteAcks.slice(-10)
   };
@@ -1463,6 +1476,8 @@ const MOD_TOOLS = [
       to: { type: 'string', enum: ['either', 'ai1', 'ai2'], description: 'Default either' },
       id: { type: 'integer' }
     }, required: ['action'] } },
+  { name: 'run_doctor', description: "Run the Relay Doctor: checks reading both panes, working signals, permission prompts, delivery, reply format, questions, relay state, the moderator, Drive and the version, and lists what's wrong with suggested fixes. Read-only: Justin taps the fixes himself. Use it when Justin asks why something stopped.",
+    input_schema: { type: 'object', properties: {} } },
   { name: 'update_questions', description: "Change the status of questions on Justin's Questions card: later (he'll come back to it), dropped (no longer needed, or replaced by a newer question), open (bring it back), answered (he answered it outside the relay, so nothing needs sending). Answered and dropped ones disappear from the card.",
     input_schema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, status: { type: 'string', enum: ['later', 'dropped', 'open', 'answered'] } }, required: ['ids', 'status'] } },
   { name: 'set_options', description: 'Change relay options.',
@@ -1657,6 +1672,7 @@ async function runTool(name, x) {
       if (!e) return { error: 'No saved copy for that pane (only the last few deliveries are kept).' };
       return { from: label(e.from), response: e.num || '?', state: e.state, sent_at: e.queuedAt || e.capturedAt, text: e.out.slice(0, 20000) };
     }
+    case 'run_doctor': { const d = await runDoctor(false); return { findings: d.findings.map((f) => ({ level: f.level, area: f.area, text: f.text, detail: f.detail, fixes: f.fixes.map((x) => x.label) })), note: 'Fixes appear as buttons on the Doctor card; Justin taps them.' }; }
     case 'update_questions': {
       const changed = [];
       (x.ids || []).forEach((id) => { const q = questions.find((y) => y.id === id); if (!q) return; if (x.status === 'answered') q.answered = true; else { q.state = x.status; if (x.status === 'open') q.answered = false; } changed.push(id); });
@@ -1797,7 +1813,7 @@ function sanitizeHistory(h) {
 function trimmedHistory() {
   return sanitizeHistory(modHistory.slice(-40));
 }
-const TOOL_LABEL = { update_questions: 'Updated questions', read_sent: 'Read what was sent', preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
+const TOOL_LABEL = { run_doctor: 'Ran the Doctor', update_questions: 'Updated questions', read_sent: 'Read what was sent', preapprove: 'Pre-approval', answer_questions: 'Recorded your answer', relay_control: 'Relay', relay_latest: 'Picked up the conversation', delivery_status: 'Checked deliveries', resolve_delivery: 'Resolved delivery', check_panes: 'Checked both AIs', read_pane: 'Read pane', send_to_pane: 'Sent message to pane', set_options: 'Updated options' };
 // An AI paused to ask Justin something; if he pre-approved a next step, let the moderator check and send it
 async function autoModerate(i, p) {
   if (window.__autoMod) return window.__autoMod(i, p); // test hook
@@ -1846,6 +1862,148 @@ async function moderatorSend(text, opts = {}) {
     if (modQueue.length) { const next = modQueue.splice(0).join('\n\n'); setTimeout(() => moderatorSend(next, { queued: true }), 50); }
   }
 }
+
+// ---------- Relay Doctor: why did it stop, and what fixes it ----------
+let doctor = null;          // last run: {at, auto, findings: [{level, area, text, detail, fixes: [{id, label}]}]}
+let doctorFixes = {};       // fix id -> action, from the last run only
+let doctorShownFor = 0;     // the stall the auto-run already reported (lastActivity value)
+let doctorRunning = false;
+const aiShort = (i) => aiName(i) === 'CLAUDE' ? 'Claude' : aiName(i) === 'CHATGPT' ? 'ChatGPT' : aiName(i);
+async function runDoctor(auto = false) {
+  if (doctorRunning) return doctor;
+  doctorRunning = true;
+  const F = []; const fixes = {}; let n = 0;
+  const add = (level, area, text, detail, fx = []) => F.push({ level, area, text, detail: detail || '', fixes: fx.map(([label, fn]) => { const id = 'fx' + (++n); fixes[id] = fn; return { id, label }; }) });
+  const now = Date.now(), mins = (t) => Math.round((now - t) / 60000);
+  try {
+    const fl = inflight();
+    // 1-2. Reading each pane
+    for (const i of [0, 1]) {
+      const p = panes[i], a = adapterFor(p), who = aiShort(i);
+      if (!a) { add('problem', `Reading ${who} pane`, `${who} pane isn't set up for this site.`, '', [['Teach', () => teach(p)]]); continue; }
+      let r = null, c = null;
+      try { r = await readPane(i); c = await run(p, pgCheck, a.input, a.reply); } catch {}
+      if (!c || !c.input) add('problem', `Reading ${who} pane`, `Can't find ${who}'s message box.`, 'The page layout may have changed, or the page is still loading.', [['Reload pane', () => p.wv.reload()], ['Teach', () => teach(p)]]);
+      else if (!r || !r.text) add('problem', `Reading ${who} pane`, `${who}'s replies read as blank.`, 'The relay can see the page but not the replies on it.', [['Teach', () => teach(p)], ['Reload pane', () => p.wv.reload()]]);
+      else if (pageChangedAt[i] - keyChangedAt[i] > 120000 && now - keyChangedAt[i] > 180000 && !working[i]) add('problem', `Reading ${who} pane`, `The ${who} page keeps changing, but the relay still sees the same old reply.`, `Last new reply seen ${mins(keyChangedAt[i])} min ago. Its reader has probably lost track: reteach it.`, [['Teach', () => teach(p)], ['Reload pane', () => p.wv.reload()]]);
+      else add('ok', `Reading ${who} pane`, 'input found · latest reply read');
+    }
+    // 3. Working signals
+    for (const i of [0, 1]) {
+      if (working[i] && now - Math.max(keyChangedAt[i], pageChangedAt[i]) > 20 * 60000) {
+        const fl2 = inflight();
+        add('problem', 'Working signals', `${aiShort(i)} shows "working" but nothing on its page has changed for ${mins(Math.max(keyChangedAt[i], pageChangedAt[i]))} min.`, 'Look at the pane: if it is really done, send its reply on.', fl2 && fl2.to === i ? [['Send its reply anyway', () => runTool('relay_latest', { from_pane: i + 1, justin_says_done: true, cancel_pending: true })]] : []);
+      }
+    }
+    if (!F.some((f) => f.area === 'Working signals')) add('ok', 'Working signals', working[0] || working[1] ? `${working[0] ? aiShort(0) : aiShort(1)} working, page changing` : 'both idle');
+    // 4. Permission prompts
+    const pp = [0, 1].filter((i) => R.perm[i]);
+    if (pp.length) pp.forEach((i) => add('problem', 'Permission prompts', `${aiShort(i)} is waiting for your permission.`, short(R.perm[i].text, 200), R.perm[i].buttons.map((b) => [b, () => answerPerm(i, b, R.perm[i].sig)])));
+    else add('ok', 'Permission prompts', 'none');
+    // 5. Delivery
+    if (fl && (fl.state === 'queued' || fl.state === 'uncertain')) {
+      let stuck = false; try { const c = await run(panes[fl.to], pgComposer, adapterFor(panes[fl.to]).input, ''); stuck = c && (c.chips || c.text); } catch {}
+      add('problem', 'Message delivery', stuck ? `${label(fl.from)} RESPONSE ${fl.num || '?'} is sitting unsent in ${aiShort(fl.to)}'s box.` : `Not sure ${label(fl.from)} RESPONSE ${fl.num || '?'} reached ${aiShort(fl.to)}.`, '', stuck ? [['Press send', () => pushSend(panes[fl.to], fl.out, fl.base.userCount)]] : [['It arrived', () => runTool('resolve_delivery', { action: 'mark_arrived' })], ['Resend', () => runTool('resolve_delivery', { action: 'resend' })]]);
+    } else add('ok', 'Message delivery', fl ? `${fl.num || 'last message'} reached ${aiShort(fl.to)} ${fmtTime(fl.awaitingAt || fl.queuedAt)}` : 'nothing in flight');
+    // 6. Reply format
+    if (fl && fl.state === 'awaiting' && !working[fl.to]) {
+      const r = await readPane(fl.to).catch(() => null);
+      const idle = now - Math.max(lastWorkAt[fl.to], new Date(fl.awaitingAt || fl.queuedAt).getTime());
+      if (r && idle > 120000 && !(isNewReplyFor(fl, r) && parseTurn(r.text))) {
+        add('problem', 'Reply format', `${aiShort(fl.to)} looks finished, but its answer isn't in relay format.`, 'It may have gone into a document, or not been written yet.', [
+          [`Ask ${aiShort(fl.to)} to repost in chat`, () => { fl.nudgedAt = null; R.formatStall = null; return sendOnly(fl.to, `Relay: your answer to ${aiName(fl.from)} RESPONSE ${fl.num || ''} didn't come through. Please post it here in the chat as plain text: ${aiName(fl.to)} RESPONSE START … END, ${aiName(fl.to)} REQUESTS ${aiName(fl.from)}, USER REQUEST, END OF TURN.`, [], 120000); }],
+          ['Send it anyway', () => runTool('relay_latest', { from_pane: fl.to + 1, justin_says_done: true, cancel_pending: true })]]);
+      }
+    }
+    if (!F.some((f) => f.area === 'Reply format')) add('ok', 'Reply format', 'OK');
+    // 7. Waiting on you
+    const need = liveQuestions().filter(questionNeeded);
+    if (need.length) add('warn', 'Waiting on you', `${need.length} question${need.length > 1 ? 's' : ''} needed to continue.`, need.map((q) => `Q${q.id}: ${short(q.text.replace(/^\s*Justin[,:]\s*/i, ''), 120)}`).join('\n'));
+    if (pendingApproval) add('warn', 'Waiting on you', 'An approval card is open.', pendingApproval.card ? short(pendingApproval.card.text, 160) : '');
+    if (!need.length && !pendingApproval) add('ok', 'Waiting on you', 'no questions or cards');
+    // 8. Relay state
+    if (R.blocker) add('problem', 'Relay state', 'Relay stopped itself.', R.blocker, [['Clear and turn on', () => setRelay(true)]]);
+    else if (!R.on) add('warn', 'Relay state', 'Relay is off.', R.turn >= maxTurns() ? `It reached ${maxTurns()} turns.` : '', [['Turn on', () => setRelay(true)]]);
+    else add('ok', 'Relay state', `on · turn ${R.turn} of ${maxTurns()}`);
+    if (R.held.length) add('warn', 'Relay state', `${R.held.length} message${R.held.length > 1 ? 's' : ''} held, not sent.`, R.held.map((h) => `${label(h.from)} ${h.num || ''}: ${h.why}`).join('\n'));
+    // 9. Moderator
+    if (!settings.apiKey) add('problem', 'Moderator', 'No Anthropic API key, so the moderator is off.', 'Add it in Settings.');
+    else if (modBusy && modQueue.length) add('warn', 'Moderator', `Busy, with ${modQueue.length} message${modQueue.length > 1 ? 's' : ''} waiting.`);
+    else { const lastErr = errors.slice().reverse().find((e) => /moderator|anthropic|api/i.test(e)); add(lastErr ? 'warn' : 'ok', 'Moderator', lastErr ? 'Recent moderator error.' : 'ready · no errors', lastErr || ''); }
+    // 10. Drive & phone
+    try { const di = await window.api.driveInfo(); add(di && di.root ? 'ok' : 'problem', 'Drive & phone', di && di.root ? `${di.root}${settings.remote ? ' · phone remote on' : ''}` : 'Google Drive folder not found: sessions only save on this PC.', ''); } catch {}
+    // 11. Version
+    try { const u = await window.api.checkUpdate(); if (u.available) add('warn', 'Version', `Update ready: v${u.latest} (you have v${u.current}).`, '', [['Update when idle', () => applyUpdate()]]); else add('ok', 'Version', 'v' + u.current); } catch {}
+  } finally { doctorRunning = false; }
+  const order = { problem: 0, warn: 1, ok: 2 };
+  F.sort((a, b) => order[a.level] - order[b.level]);
+  doctor = { at: nowIso(), auto, findings: F };
+  doctorFixes = fixes;
+  renderDoctor();
+  return doctor;
+}
+async function doctorFix(id) {
+  const fn = doctorFixes[id];
+  if (!fn) return { ok: false, why: 'That fix is out of date. Run the Doctor again.' };
+  const f = doctor.findings.find((x) => x.fixes.some((y) => y.id === id)); const fx = f && f.fixes.find((y) => y.id === id);
+  note(`Doctor fix: ${fx ? fx.label : id}${f ? ` (${f.area})` : ''}.`);
+  try { await fn(); } catch (e) { note('Doctor fix failed: ' + e.message, true); return { ok: false, why: e.message }; }
+  setTimeout(() => runDoctor(doctor && doctor.auto), 4000);
+  return { ok: true };
+}
+function maybeAutoDoctor() {
+  // things moved again: an automatic finding is out of date
+  if (doctor && doctor.auto && !doctor.manual && doctorShownFor && doctorShownFor !== lastActivity) { doctor = null; doctorShownFor = 0; renderDoctor(); }
+  if (!R.on || doctorRunning) return;
+  const quiet = Date.now() - lastActivity;
+  if (quiet < (settings.doctorMin ?? 10) * 60000 || working[0] || working[1] || doctorShownFor === lastActivity) return;
+  doctorShownFor = lastActivity;
+  runDoctor(true).then((d) => { const top = d.findings.find((f) => f.level !== 'ok'); note(top ? `Relay Doctor: ${top.text}` : 'Relay Doctor: nothing moved for a while, but every check is OK. The AIs may still be thinking.', !!top); });
+}
+function renderDoctor() {
+  let box = $('#docCard');
+  if (!box) { box = document.createElement('section'); box.id = 'docCard'; box.className = 'doccard hidden'; box.setAttribute('aria-label', 'Relay Doctor'); $('#qCard').before(box); }
+  const d = doctor;
+  const top = d && d.findings.find((f) => f.level !== 'ok');
+  box.classList.toggle('hidden', !d || (!top && !d.manual));
+  if (!d) { pushStatus(); return; }
+  const okN = d.findings.filter((f) => f.level === 'ok').length;
+  box.className = 'doccard' + (top ? ' ' + top.level : ' allok');
+  box.innerHTML = `<div class="dh"><b>Relay Doctor</b><span class="qtime">${fmtTime(d.at)}</span><button class="dx" aria-label="Close">×</button></div>`;
+  const body = document.createElement('div');
+  if (top) {
+    body.innerHTML = `<div class="dt"></div><div class="dd"></div><div class="pb"></div>`;
+    $('.dt', body).textContent = top.text; $('.dd', body).textContent = top.detail || '';
+    top.fixes.forEach((fx, k) => { const b = document.createElement('button'); b.textContent = fx.label; if (!k) b.className = 'primary'; b.onclick = () => doctorFix(fx.id); $('.pb', body).appendChild(b); });
+  } else body.innerHTML = '<div class="dt">Every check is OK.</div><div class="dd">If it still seems stuck, the AIs may just be thinking.</div>';
+  box.appendChild(body);
+  const more = document.createElement('div'); more.className = 'dm';
+  const others = d.findings.filter((f) => f !== top && f.level !== 'ok').length;
+  more.innerHTML = `<span>${others ? others + ' more to look at · ' : ''}${okN} check${okN === 1 ? '' : 's'} OK</span><a href="#">See full check</a>`;
+  $('a', more).onclick = (e) => { e.preventDefault(); openDoctorFull(); };
+  box.appendChild(more);
+  $('.dx', box).onclick = () => { box.classList.add('hidden'); };
+  pushStatus();
+}
+function openDoctorFull() {
+  let dlg = $('#docDlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'docDlg'; dlg.className = 'docdlg'; document.body.appendChild(dlg); }
+  const d = doctor; if (!d) return;
+  dlg.innerHTML = `<div class="dh"><b>Relay Doctor</b><span class="qtime">${fmtTime(d.at)}</span><button class="again">Run again</button><button class="copy">Copy report</button><button class="dx" aria-label="Close">×</button></div><div class="dl"></div>`;
+  for (const f of d.findings) {
+    const row = document.createElement('div'); row.className = 'drow ' + f.level;
+    row.innerHTML = `<span class="dot"></span><div class="dc"><div><b></b> <span class="dtx"></span></div><div class="dd"></div><div class="pb"></div></div>`;
+    $('b', row).textContent = f.area; $('.dtx', row).textContent = f.text; $('.dd', row).textContent = f.detail || '';
+    f.fixes.forEach((fx, k) => { const b = document.createElement('button'); b.textContent = fx.label; if (!k && f.level === 'problem') b.className = 'primary'; b.onclick = async () => { await doctorFix(fx.id); dlg.close(); setPanesVisible(true); }; $('.pb', row).appendChild(b); });
+    $('.dl', dlg).appendChild(row);
+  }
+  $('.again', dlg).onclick = async () => { await runDoctor(false); doctor.manual = true; openDoctorFull(); };
+  $('.copy', dlg).onclick = () => { window.api.clipWrite(doctorText()); note('Copied the Doctor report.'); };
+  $('.dx', dlg).onclick = () => { dlg.close(); setPanesVisible(true); };
+  setPanesVisible(false);
+  if (!dlg.open) dlg.showModal();
+}
+const doctorText = () => doctor ? `RELAY DOCTOR · ${new Date(doctor.at).toLocaleString()}\n` + doctor.findings.map((f) => `${f.level.toUpperCase().padEnd(7)} ${f.area}: ${f.text}${f.detail ? ' — ' + f.detail.replace(/\n/g, ' | ') : ''}`).join('\n') : '';
 
 // ---------- Finished, but not in relay format ----------
 async function checkFormatStall(fl, r) {
@@ -1942,6 +2100,8 @@ function handleRemote(cmd) {
       return ack(true);
     }
     case 'relay': setRelay(!!cmd.on, cmd.on ? undefined : 'Relay off (from your phone).'); return ack(true);
+    case 'doctor': { runDoctor(false).then(() => ack(true)); return; }
+    case 'doctorFix': { doctorFix(String(cmd.fix || '')).then((r) => ack(!!r.ok, r.ok ? '' : r.why)); return; }
     case 'perm': {
       note(`From your phone: "${cmd.label}" on ${aiName(cmd.pane | 0)}'s permission prompt.`);
       answerPerm(cmd.pane | 0, String(cmd.label || ''), cmd.sig).then((r) => ack(!!r.ok, r.ok ? '' : r.why));
@@ -2088,6 +2248,7 @@ async function debugReport() {
   lines.push('', `Google Drive folder: ${drv.found ? drv.root : 'NOT FOUND (files go to Documents/Journey Relay)'} · session folder: ${session && session.driveFolder || '-'} · sessions saved ${drv.found ? 'in Drive (Journey Relay/_sessions)' : 'on this computer only'} · computer: ${myHost}`);
   lines.push(`Delivery: ${deliveryText().text}`);
   [0, 1].forEach((i) => { if (R.permHtml[i]) lines.push(`Permission prompt seen in AI ${i + 1}${R.perm[i] ? ' (showing now)' : ''}: ${R.permHtml[i].replace(/\s+/g, ' ').slice(0, 1500)}`); });
+  if (doctor) lines.push(doctorText());
   lines.push(`Last send attempt: AI 1 ${R.sendNote[0] || '-'} · AI 2 ${R.sendNote[1] || '-'}`);
   lines.push('Recent deliveries: ' + (R.ledger.slice(-6).map((y) => `${label(y.from)} R${y.num || '?'}→${label(y.to)} ${y.state}${y.attempts > 1 ? ` (${y.attempts} tries)` : ''}`).join(' | ') || 'none'));
   lines.push(`Busy: ${isBusy() ? 'YES' : 'no'} (AI 1 working: ${working[0]}, AI 2 working: ${working[1]}, sending: ${R.busy})`);
@@ -2313,6 +2474,7 @@ async function init() {
     const b = $('#debugBtn'); b.textContent = 'Copied: paste it to Claude'; setTimeout(() => (b.textContent = 'Copy debug report'), 2500);
   };
   $('#updateBtn').onclick = applyUpdate;
+  $('#doctorBtn').onclick = async () => { const b = $('#doctorBtn'); b.textContent = 'Checking…'; await runDoctor(false); doctor.manual = true; b.textContent = 'Doctor'; openDoctorFull(); };
   $('#version').ondblclick = () => checkUpdate(false);
   setInterval(tick, 1200);
   setInterval(pushStatus, 60000); // heartbeat so STATUS.md shows the app is alive

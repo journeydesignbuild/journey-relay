@@ -132,7 +132,7 @@ form.say button { height: 44px; padding: 0 16px; border-radius: 12px; border: no
         <div class="wtitle"><div class="n" id="wName"></div><div class="s" id="wSub"></div></div>
         <button class="go" id="goBtn">Start</button>
       </header>
-      <div id="status" class="status" role="status"><span class="dot" id="sDot"></span><div style="flex:1;min-width:0"><div class="t" id="sTitle"></div><div class="d" id="sDetail"></div></div><span id="sTime" style="color:#8E949E;font-size:12px"></span></div>
+      <div id="status" class="status" role="status"><span class="dot" id="sDot"></span><div style="flex:1;min-width:0"><div class="t" id="sTitle"></div><div class="d" id="sDetail"></div></div><span id="sTime" style="color:#8E949E;font-size:12px"></span><button id="docBtn" style="height:32px;padding:0 10px;border-radius:8px;border:1px solid #2E333B;background:#1C2026;color:#E6E8EB;font-size:13px">Doctor</button></div>
       <section id="qcard" class="qcard hidden" aria-label="Questions">
         <button class="qbar" id="qbar" aria-expanded="false"><span class="tt"><b id="qTitle"></b><span id="qSub"></span></span><span id="qBadge" class="pill need hidden"></span><svg id="qChev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8E949E" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
         <div id="qlist" class="qlist hidden"></div>
@@ -229,7 +229,8 @@ function mockInit() {
     posey: { id: 'posey', name: 'Posey Estimate Audit', updated: iso(0), relay: false, turn: '', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'waiting', title: 'Waiting for your answers', detail: '2 needed to continue' }, delivery: 'Last: AI 1 R003 → AI 2 · delivered 5:37 PM',
       questions: [{ id: 24, from: 1, ai: 'CLAUDE', text: 'Justin: millwork, does Journey build it or Maruta Makes?', at: iso(30), needed: true }, { id: 25, from: 1, ai: 'CLAUDE', text: 'Justin: do the fence, bench and water feature ($76,621) count inside the $180k landscape allowance?', at: iso(30), needed: true }, { id: 7, from: 1, ai: 'CLAUDE', text: 'Which of the six email drafts are approved?', at: iso(900) }],
       chat: [{ kind: 'sys', text: 'Passed AI 1 → AI 2.', t: iso(40) }, { kind: 'q', text: 'Q24 · CLAUDE asks:\nMillwork: does Journey build it, or Maruta Makes?', t: iso(30) }, { kind: 'ai', text: 'Claude finished the audit review. The relay is paused until you answer Q-24 and Q-25.', t: iso(29) }],
-      approval: { id: 'apx', title: 'Your answer → AI 2 (Claude)', text: 'Q-24: Maruta Makes builds the millwork.' }, acks: [] },
+      approval: { id: 'apx', title: 'Your answer → AI 2 (Claude)', text: 'Q-24: Maruta Makes builds the millwork.' }, acks: [],
+      doctor: { at: iso(1), auto: true, findings: [{ level: 'problem', area: 'Reply format', text: "Claude looks finished, but its answer isn't in relay format.", detail: 'It may have gone into a document.', fixes: [{ id: 'fx1', label: 'Ask Claude to repost in chat' }, { id: 'fx2', label: 'Send it anyway' }] }, { level: 'warn', area: 'Version', text: 'Update ready: v1.17.0.', detail: '', fixes: [] }, { level: 'ok', area: 'Reading ChatGPT pane', text: 'OK', detail: '', fixes: [] }] } },
     dev: { id: 'dev', name: 'JDB OS DEV 01', updated: iso(0), relay: true, turn: '6 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'waiting', title: 'Claude needs your permission', detail: 'Supabase wants to run apply_migration', since: iso(1) }, delivery: 'AI 1 R083 → AI 2 · waiting for reply', questions: [{ id: 13, from: 1, ai: 'CLAUDE', text: 'PR #20 is live. Last step is a quick read-only check.', at: iso(60) }], chat: [], approval: null, acks: [],
       perms: [{ pane: 1, ai: 'CLAUDE', text: 'Claude wants to use Supabase: apply_migration\nProject: dev\nName: 046_pdf_match_carryover', buttons: ['Allow once', 'Always allow', 'Deny'], sig: 'p1', since: iso(1) }] },
     sand: { id: 'sand', name: 'Sandbox Agents Cleanup', updated: iso(0), relay: true, turn: '2 of 20', ai: ['CHATGPT', 'CLAUDE'], state: { kind: 'safe', title: 'Safe · nothing running', detail: 'Relay on, waiting for the next reply' }, delivery: 'Last: AI 2 R042 → AI 1', questions: [], chat: [], approval: null, acks: [] }
@@ -332,7 +333,7 @@ function renderChat(w, scroll) {
   const box = $('#chat');
   const acked = new Set((w.acks || []).map((a) => a.file));
   const mine = pending.filter((p) => p.win === w.id && !acked.has(p.file));
-  const key = JSON.stringify([(w.chat || []).length, (w.chat || []).slice(-1)[0], w.approval && w.approval.id, (w.perms || []).map((p) => p.sig), mine.length, (w.acks || []).length]);
+  const key = JSON.stringify([w.doctor && w.doctor.at, (w.chat || []).length, (w.chat || []).slice(-1)[0], w.approval && w.approval.id, (w.perms || []).map((p) => p.sig), mine.length, (w.acks || []).length]);
   if (key === lastChatKey && !scroll) return;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const old = $('#apText'); const keep = old ? { id: old.dataset.id, v: old.value } : null;
@@ -347,6 +348,18 @@ function renderChat(w, scroll) {
   for (const p of mine) { const d = document.createElement('div'); d.className = 'm you pending'; d.textContent = p.text; const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = `Sent ${hm(p.at)} · waiting for the PC…`; d.appendChild(ts); box.appendChild(d); }
   const lastAck = (w.acks || []).slice(-1)[0];
   if (lastAck && pending.some((p) => p.file === lastAck.file)) { const d = document.createElement('div'); d.className = 'm sys'; d.textContent = lastAck.ok ? `Reached the PC ${hm(lastAck.at)}` : `Not taken: ${lastAck.note}`; box.appendChild(d); }
+  const doc = w.doctor; const dtop = doc && doc.findings.find((f) => f.level !== 'ok');
+  if (doc && (dtop || doctorAsked[w.id])) {
+    const d = document.createElement('div'); d.className = 'ap';
+    if (!dtop) d.style.borderColor = '#23402D';
+    d.innerHTML = `<div class="h" style="${dtop ? '' : 'color:#8FD19E'}">Relay Doctor · ${hm(doc.at)}</div><div style="font-weight:700;font-size:16px;line-height:1.3"></div><div class="dd" style="color:#C7B4A3;font-size:14px;white-space:pre-wrap"></div><div class="row"></div><div class="oth" style="color:#8E949E;font-size:12.5px"></div>`;
+    d.children[1].textContent = dtop ? dtop.text : 'Every check is OK. The AIs may still be thinking.';
+    d.children[2].textContent = dtop ? (dtop.detail || '') : '';
+    (dtop ? dtop.fixes : []).forEach((fx, k) => { const b = document.createElement('button'); b.textContent = fx.label; if (!k) b.className = 'ok'; b.onclick = () => send({ type: 'doctorFix', fix: fx.id }, `Sent: ${fx.label}`); d.querySelector('.row').appendChild(b); });
+    const others = doc.findings.filter((f) => f !== dtop && f.level !== 'ok');
+    d.querySelector('.oth').textContent = (others.length ? others.map((f) => f.area + ': ' + f.text).join(' · ') + ' · ' : '') + (() => { const k = doc.findings.filter((f) => f.level === 'ok').length; return `${k} check${k === 1 ? '' : 's'} OK`; })();
+    box.appendChild(d);
+  }
   for (const pm of (w.perms || [])) {
     const d = document.createElement('div'); d.className = 'ap';
     d.innerHTML = `<div class="h">${esc(aiLabel(pm.ai))} needs your permission</div><div class="pt"></div><div class="row"></div>`;
@@ -383,6 +396,8 @@ async function send(cmd, label) {
 $('#sayForm').onsubmit = (e) => { e.preventDefault(); const t = $('#say').value.trim(); if (!t) return; $('#say').value = ''; $('#say').style.height = ''; send({ type: 'message', text: t }); };
 $('#say').addEventListener('input', (e) => { const t = e.target; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 140) + 'px'; });
 $('#say').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 760px)').matches) { e.preventDefault(); $('#sayForm').requestSubmit(); } });
+const doctorAsked = {};
+$('#docBtn').onclick = () => { const w = store.wins[current]; if (!w) return; doctorAsked[w.id] = true; send({ type: 'doctor' }, 'Asked the PC to run the Doctor'); };
 $('#goBtn').onclick = () => { const w = store.wins[current]; if (!w) return; send({ type: 'relay', on: !w.relay }, w.relay ? 'Asked the PC to stop the relay' : 'Asked the PC to start the relay'); };
 
 // ---------- Loop ----------

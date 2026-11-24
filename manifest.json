@@ -1,6 +1,6 @@
 {
-  "version": "1.14.1",
-  "notes": "Settings: Browse\u2026 to pick any Google Drive folder, including Shared drives. Phone remote works with a Shared drive too.",
+  "version": "1.15.0",
+  "notes": "Every relayed message ends with a one-line format reminder. If an AI finishes but its answer isn't in relay format (often a document), the relay asks it once to repost in the chat and shows it in the status.",
   "files": [
     "main.js",
     "preload.js",

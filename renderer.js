@@ -786,6 +786,8 @@ function hopContent(parsed) {
   return { text, files };
 }
 
+// One line on every relayed message: long chats forget the rules, and chat apps like to put long work in a document
+const reminder = (to) => `\n\n(Relay: reply here in the chat, in plain text, as ${aiName(to)} RESPONSE … END OF TURN. No documents, artifacts or canvas: ${aiName(1 - to)} only gets chat text.)`;
 function intro(i) {
   const rules = settings.framework.replaceAll('{ME}', aiName(i)).replaceAll('{OTHER}', aiName(1 - i));
   return R.task ? rules + '\n\nTASK:\n' + R.task : rules;
@@ -894,6 +896,7 @@ function holdMessage(i, text, key, num, why) {
 let ticking = false; // one check at a time, so a reply can never be sent twice
 const working = [false, false];
 const lastKey = ['', ''];
+const lastWorkAt = [0, 0]; // when each AI was last seen working
 async function tick() {
   if (R.busy || ticking) return;
   ticking = true;
@@ -925,6 +928,7 @@ async function tickOnce() {
     if (!r) continue;
     try { await checkPerm(i); } catch {}
     const w = !!r.busy || (r.key !== lastKey[i] && !!lastKey[i]);
+    if (w) lastWorkAt[i] = Date.now();
     lastKey[i] = r.key;
     if (w !== working[i]) { working[i] = w; refreshBusy(); }
   }
@@ -932,6 +936,9 @@ async function tickOnce() {
   const fl = inflight();
   // 1) An unconfirmed delivery is resolved by looking at the destination before anything else happens
   if (fl && (fl.state === 'queued' || fl.state === 'uncertain')) { await reconcile(fl, reads[fl.to]); return; }
+  // 1b) The AI looks finished but nothing usable came back (often: it wrote the answer into a document)
+  if (fl && fl.state === 'awaiting') await checkFormatStall(fl, reads[fl.to]);
+  else if (R.formatStall) { R.formatStall = null; pushStatus(); }
   // 2) Waiting too long for a reply
   if (fl && fl.state === 'awaiting' && Date.now() - new Date(fl.awaitingAt || fl.queuedAt).getTime() > (settings.timeoutMin || 60) * 60000) {
     block(`no reply from ${label(fl.to)} (${aiName(fl.to)}) ${settings.timeoutMin || 60} min after delivering ${label(fl.from)} RESPONSE ${fl.num || '?'}.`);
@@ -1048,6 +1055,7 @@ async function deliver(i, p, key) {
   if (!R.introduced[to]) out = intro(to) + `\n\nBelow is ${aiName(i)}'s latest reply.\n\n` + out;
   const answers = R.queued[to].length;
   if (answers) out += '\n\nUSER RESPONSE\n' + R.queued[to].join('\n\n');
+  out += reminder(to);
   const base = await readPane(to);
   const e = {
     id: `${convKey(i)}|${key}`, from: i, to, conv: convKey(i), dest: convKey(to), hash: key, num: p.num || '',
@@ -1200,6 +1208,7 @@ function remoteState() {
   const pi = [0, 1].find((i) => R.perm[i]);
   if (pi !== undefined) return { kind: 'waiting', title: `${aiName(pi) === 'CLAUDE' ? 'Claude' : aiName(pi) === 'CHATGPT' ? 'ChatGPT' : aiName(pi)} needs your permission`, detail: short(R.perm[pi].text.split('\n')[0], 120), since: R.perm[pi].since };
   if (R.blocker) return { kind: 'blocked', title: 'Blocked', detail: R.blocker };
+  if (R.formatStall) { const w = aiName(R.formatStall.to) === 'CLAUDE' ? 'Claude' : aiName(R.formatStall.to) === 'CHATGPT' ? 'ChatGPT' : aiName(R.formatStall.to); return { kind: 'waiting', title: `${w} didn't use the relay format`, detail: `Asked ${w} to repost its answer in the chat`, since: R.formatStall.at }; }
   if (isBusy()) {
     const who = working[0] && working[1] ? 'Both AIs are working' : working[0] ? `${aiName(0) === 'CLAUDE' ? 'Claude' : aiName(0) === 'CHATGPT' ? 'ChatGPT' : aiName(0)} is working` : working[1] ? `${aiName(1) === 'CLAUDE' ? 'Claude' : aiName(1) === 'CHATGPT' ? 'ChatGPT' : aiName(1)} is working` : 'Sending';
     return { kind: 'busy', title: `Busy · ${who}`, detail: R.phase || '', since: busySince };
@@ -1831,6 +1840,34 @@ async function moderatorSend(text, opts = {}) {
   } finally {
     modBusy = false;
     if (modQueue.length) { const next = modQueue.splice(0).join('\n\n'); setTimeout(() => moderatorSend(next, { queued: true }), 50); }
+  }
+}
+
+// ---------- Finished, but not in relay format ----------
+async function checkFormatStall(fl, r) {
+  if (!r || working[fl.to] || R.perm[fl.to]) return;
+  const now = Date.now();
+  const sinceSend = now - new Date(fl.awaitingAt || fl.queuedAt).getTime();
+  const idle = now - Math.max(lastWorkAt[fl.to], new Date(fl.awaitingAt || fl.queuedAt).getTime());
+  const stallMs = (settings.stallMin ?? 4) * 60000, idleMs = (settings.stallIdleMin ?? 2.5) * 60000;
+  if (sinceSend < stallMs || idle < idleMs) return;
+  const parsed = parseTurn(r.text);
+  const usable = isNewReplyFor(fl, r) && (parsed || (r.text || '').length >= 600);
+  if (usable) return; // a real reply: the normal path handles it
+  const who = aiName(fl.to) === 'CLAUDE' ? 'Claude' : aiName(fl.to) === 'CHATGPT' ? 'ChatGPT' : aiName(fl.to);
+  if (!fl.nudgedAt) {
+    fl.nudgedAt = nowIso(); saveNow();
+    R.formatStall = { id: fl.id, to: fl.to, at: fl.nudgedAt };
+    note(`${who} looks finished, but its answer didn't come back in relay format (it may have gone into a document). Asking ${who} once to repost it in the chat.`, false);
+    pushStatus();
+    try {
+      await sendOnly(fl.to, `Relay: your answer to ${aiName(fl.from)} RESPONSE ${fl.num || ''} didn't come through. It may have gone into a document, artifact or canvas, which the relay can't read. Please post it again here in the chat as plain text:\n\n${aiName(fl.to)} RESPONSE START … END\n${aiName(fl.to)} REQUESTS ${aiName(fl.from)}\nUSER REQUEST\nEND OF TURN`, [], 120000);
+    } catch (e) { recordError('Format nudge: ' + e.message); }
+    return;
+  }
+  if (!fl.stallBlocked && now - new Date(fl.nudgedAt).getTime() > stallMs) {
+    fl.stallBlocked = true; saveNow();
+    block(`${who} still hasn't answered ${aiName(fl.from)} RESPONSE ${fl.num || '?'} in relay format. Look at the ${who} pane: if the answer is there, tell the moderator "send ${who}'s reply anyway"; otherwise ask it again.`);
   }
 }
 

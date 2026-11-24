@@ -25,7 +25,7 @@ module.exports = (win, app) => {
       await js(`
         settings.adapters['localhost:8001'] = { name: 'a', input: '#box', reply: '.bot', send: '#send', busy: '#stop', user: '.user' };
         settings.adapters['localhost:8002'] = { name: 'b', input: '#box', reply: '.bot', send: '', busy: '#stop', user: '.user' };
-        settings.fallbackSec = 6; settings.stableSec = 2; settings.driveFolder = '/tmp/fakedrive/My Drive';
+        settings.fallbackSec = 6; settings.stableSec = 2; settings.driveFolder = '/tmp/fakedrive/My Drive'; settings.stallMin = 999;
         saveSettings();
         panes[0].wv.loadURL('http://localhost:8001'); panes[1].wv.loadURL('http://localhost:8002');
         panes[0].nameInput.value = 'ALPHA'; panes[1].nameInput.value = 'BETA';
@@ -309,6 +309,25 @@ module.exports = (win, app) => {
       await sleep(2000);
       const clicked24 = await site(1, 'window.permClicked');
       check('24. Permission prompt: shown as needed, not auto-clicked, stale tap refused, phone tap clicks it', seen24 && auto24 === '' && /permission/.test(card24 || '') && /needs your permission/.test(st24) && stale24 === '' && clicked24 === 'Allow once', JSON.stringify({ seen24, auto24, card24, st24, stale24, clicked24 }));
+
+      // ---- 25. Reminder on every relayed message; finished-but-no-format reply gets one nudge, then the real answer is relayed ----
+      await js('R.inflight = null; R.held = []; R.blocker = ""; R.waitingOn = null; R.perm = [null, null]; settings.stallMin = 0.15; settings.stallIdleMin = 0.1; if (!R.on) setRelay(true); true'); await sleep(2500);
+      const b25 = await recv(1);
+      await site(0, `post(protocol('095', 'Please review the plan.', { request: 'Review it, please.' }))`);
+      const got25 = await (async () => { const t0 = Date.now(); while (Date.now() - t0 < 40000) { if ((await recv(1)) > b25) return true; await sleep(500); } return false; })();
+      const lastIn25 = await site(1, `[...document.querySelectorAll('.user')].pop().innerText`);
+      // BETA "answers" with a document card only (no relay format) and goes idle: expect one nudge
+      await site(1, `post('Bank reconciliation review (document)')`);
+      const nudged25 = await (async () => { const t0 = Date.now(); while (Date.now() - t0 < 60000) { if ((await recv(1)) > b25 + 1) return true; await sleep(1000); } return false; })();
+      const nudgeText = await site(1, `[...document.querySelectorAll('.user')].pop().innerText`);
+      const st25 = await js('remoteState().title');
+      const a25 = await recv(0);
+      await site(1, `post(protocol('050', 'Here is my review, in chat this time.', { request: 'Please confirm.' }))`);
+      const relayed25 = await (async () => { const t0 = Date.now(); while (Date.now() - t0 < 40000) { if ((await recv(0)) > a25) return true; await sleep(500); } return false; })();
+      await js('settings.stallMin = 999; true');
+      check('25. Reminder on each relay; no-format reply nudged once; real answer then relayed',
+        got25 && /No documents, artifacts or canvas/.test(lastIn25) && nudged25 && /relay can't read/.test(nudgeText) && /didn't use the relay format/.test(st25) && relayed25,
+        JSON.stringify({ got25, reminder: /No documents/.test(lastIn25), nudged25, nudge: nudgeText.slice(0, 60), st25, relayed25 }));
 
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);

@@ -161,8 +161,18 @@ function loadSettings() {
 
 // The Drive choice lives in its own file, so a window holding an old copy of settings can't undo it
 const driveFile = () => path.join(app.getPath('userData'), 'drive.json');
-function loadDriveChoice() { try { return JSON.parse(fs.readFileSync(driveFile(), 'utf8')).folder || ''; } catch { return null; } }
-function saveDriveChoice(folder) { fs.mkdirSync(path.dirname(driveFile()), { recursive: true }); fs.writeFileSync(driveFile(), JSON.stringify({ folder, at: new Date().toISOString() }, null, 2)); }
+// The app keeps everything in its own "Journey Relay" folder inside the folder you pick. If you pick that folder itself
+// (or something inside it), use the folder above it, so it never nests Journey Relay\Journey Relay\…
+function relayParent(folder) {
+  if (!folder) return folder;
+  const parts = path.resolve(folder).split(/[\\/]+/);
+  const k = parts.findIndex((x) => x.toLowerCase() === 'journey relay');
+  if (k <= 0) return folder;
+  const root = parts.slice(0, k).join(path.sep);
+  return /^[A-Za-z]:$/.test(root) ? root + path.sep : (root || path.sep);
+}
+function loadDriveChoice() { try { return relayParent(JSON.parse(fs.readFileSync(driveFile(), 'utf8')).folder || ''); } catch { return null; } }
+function saveDriveChoice(folder) { fs.mkdirSync(path.dirname(driveFile()), { recursive: true }); fs.writeFileSync(driveFile(), JSON.stringify({ folder: relayParent(folder), at: new Date().toISOString() }, null, 2)); }
 function saveSettings(s) {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
   const { driveFolder, ...rest } = s; // never saved here; see drive:set
@@ -263,7 +273,8 @@ ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:defaults', () => ({ ...DEFAULTS }));
 ipcMain.handle('settings:save', (_e, s) => { saveSettings(s); return true; });
 // Pick the Google Drive the relay saves to. Marks it as home, and marks the others as moved away, so other computers pick the same account.
-ipcMain.handle('drive:set', (_e, folder) => {
+ipcMain.handle('drive:set', (_e, folder0) => {
+  const folder = relayParent(folder0);
   saveDriveChoice(folder || '');
   const notes = [];
   if (folder) {
@@ -351,7 +362,7 @@ function findDriveRoot() {
   }
   cands.push(path.join(home, 'Google Drive', 'My Drive'), path.join(home, 'My Drive'), path.join(home, 'Google Drive'));
   const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
-  if (s.driveFolder && isDir(s.driveFolder)) return s.driveFolder;
+  if (s.driveFolder && isDir(relayParent(s.driveFolder))) return relayParent(s.driveFolder);
   const rel = (p, f) => fs.existsSync(path.join(p, 'Journey Relay', f));
   const found = cands.filter(isDir).filter((p) => !rel(p, '_moved.json'));
   const marked = found.find((p) => rel(p, '_home.json'));
@@ -395,7 +406,7 @@ ipcMain.handle('drive:list', () => allDriveRoots());
 ipcMain.handle('drive:browse', async (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   const r = await dialog.showOpenDialog(w, { title: 'Choose the Google Drive folder for Journey Relay', properties: ['openDirectory'] });
-  return r.canceled || !r.filePaths[0] ? '' : r.filePaths[0];
+  return r.canceled || !r.filePaths[0] ? '' : relayParent(r.filePaths[0]);
 });
 // Switching accounts: copy the relay's sessions and files to the new Drive (never overwriting)
 ipcMain.handle('drive:move', (_e, { from, to }) => {

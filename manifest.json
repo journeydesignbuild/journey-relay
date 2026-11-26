@@ -1,6 +1,6 @@
 {
-  "version": "1.17.0",
-  "notes": "Relay Doctor: one button (and automatic after 10 quiet minutes) checks why the relay stopped and offers one-tap fixes, on the PC and your phone.",
+  "version": "1.17.1",
+  "notes": "Picking the Journey Relay folder itself (or a folder inside it) in Settings no longer nests a second Journey Relay folder; a nested choice is corrected automatically.",
   "files": [
     "main.js",
     "preload.js",

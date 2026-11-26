@@ -356,6 +356,13 @@ module.exports = (win, app) => {
       check('26. Relay Doctor: cause found, phone fix applied, stuck reader spotted, auto-run shows card',
         r26.offFound && r26.fixId && r26.onAfter && !!r26.stuck && r26.stuckFixes.includes('Teach') && r26.auto && r26.cardShown && /Doctor found why/.test(r26.st), JSON.stringify(r26));
 
+      // ---- 27. Picking the "Journey Relay" folder itself (or inside it) never nests another Journey Relay ----
+      require('fs').mkdirSync('/tmp/fakedrive2/My Drive/Journey Relay/Journey Relay', { recursive: true });
+      await js(`window.api.driveSet('/tmp/fakedrive2/My Drive/Journey Relay/Journey Relay')`);
+      const d27 = await js('window.api.driveInfo().then(r => r.root)');
+      await js(`window.api.driveSet('/tmp/fakedrive/My Drive')`);
+      check('27. Picking the Journey Relay folder itself uses the folder above it', d27 === '/tmp/fakedrive2/My Drive', `root ${d27}`);
+
       // ---- overall ----
       const states = await js(`R.ledger.map(e => e.state).join(',')`);
       console.log('Ledger states: ' + states);

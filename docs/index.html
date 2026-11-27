@@ -182,39 +182,64 @@ async function findFolder(name, parent) {
   const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
   return j.files || [];
 }
+// Find every relay data folder (_remote inside a "Journey Relay" folder, in My Drive or a Shared drive) and use the ones
+// a computer is writing to right now. Leftover copies nobody updates are ignored.
+const LIVE_MS = 10 * 60000;
+let lastLocate = 0, liveFolders = []; // [{id, inbox, pcAt}]
+async function listIn(folderId, extra) {
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false` + (extra || ''));
+  return (await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime)&pageSize=200${ALL}`)).json()).files || [];
+}
+const ALL = '&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives';
 async function locate() {
-  if (ids.remote) return;
-  // the relay's folder can be in My Drive or a Shared drive: find every _remote folder and keep the newest one inside "Journey Relay"
+  if (liveFolders.length && Date.now() - lastLocate < 5 * 60000) return;
   const q = encodeURIComponent("name='_remote' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,parents,modifiedTime)&orderBy=modifiedTime desc&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
+  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,parents)&pageSize=50${ALL}`)).json();
+  const found = [];
   for (const f of j.files || []) {
     const par = (f.parents || [])[0]; if (!par) continue;
     const pj = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${par}?fields=name&supportsAllDrives=true`)).json();
     if (pj.name !== 'Journey Relay') continue;
-    ids.remote = f.id; const ib = await findFolder('inbox', f.id); ids.inbox = ib[0] && ib[0].id; return;
+    const kids = await listIn(f.id);
+    const pc = kids.find((k) => k.name === 'pc.json');
+    const inbox = kids.find((k) => k.name === 'inbox' && k.mimeType === 'application/vnd.google-apps.folder');
+    found.push({ id: f.id, inbox: inbox && inbox.id, pcAt: pc ? new Date(pc.modifiedTime).getTime() : 0 });
   }
-  throw new Error('noremote');
+  if (!found.length) throw new Error('noremote');
+  found.sort((a, b) => b.pcAt - a.pcAt);
+  const live = found.filter((x) => Date.now() - x.pcAt < LIVE_MS);
+  liveFolders = live.length ? live : [found[0]];
+  lastLocate = Date.now();
 }
 const modTimes = {};
 async function refreshDrive() {
   await locate();
-  const q = encodeURIComponent(`'${ids.remote}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`);
-  const j = await (await gfetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`)).json();
-  for (const f of j.files || []) {
-    if (!/^win-.*\.json$|^pc\.json$/.test(f.name) || modTimes[f.id] === f.modifiedTime) continue;
-    try {
-      const data = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`)).json();
-      modTimes[f.id] = f.modifiedTime;
-      if (f.name === 'pc.json') store.pc = data; else if (data && data.id) store.wins[data.id] = data;
-    } catch (e) { if (e.message === 'signin') throw e; }
+  const pcs = [];
+  for (const fo of liveFolders) {
+    for (const f of await listIn(fo.id, " and mimeType!='application/vnd.google-apps.folder'")) {
+      if (!/^win-.*\.json$|^pc\.json$/.test(f.name)) continue;
+      if (modTimes[f.id] !== f.modifiedTime || f.name === 'pc.json') {
+        try {
+          const data = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`)).json();
+          modTimes[f.id] = f.modifiedTime;
+          if (f.name === 'pc.json') pcs.push(data);
+          else if (data && data.id) { const old = store.wins[data.id]; if (!old || old.closed || !data.closed || new Date(data.updated) >= new Date(old.updated)) store.wins[data.id] = { ...data, _folder: fo.id }; }
+        } catch (e) { if (e.message === 'signin') throw e; }
+      }
+    }
   }
+  // one heartbeat to show: the freshest; list every computer that's online
+  pcs.sort((a, b) => new Date(b.at) - new Date(a.at));
+  if (pcs.length) store.pc = { ...pcs[0], hosts: pcs.filter((p) => Date.now() - new Date(p.at) < OFFLINE_AFTER).map((p) => p.host) };
 }
 async function sendDrive(cmd) {
   await locate();
-  if (!ids.inbox) { const ib = await findFolder('inbox', ids.remote); ids.inbox = ib[0] && ib[0].id; if (!ids.inbox) throw new Error('no inbox folder yet'); }
+  const w = store.wins[cmd.win];
+  const fo = liveFolders.find((x) => w && x.id === w._folder) || liveFolders[0];
+  if (!fo.inbox) { const ib = (await listIn(fo.id, " and mimeType='application/vnd.google-apps.folder' and name='inbox'"))[0]; fo.inbox = ib && ib.id; if (!fo.inbox) throw new Error('no inbox folder yet'); }
   const name = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`;
   const boundary = 'jr' + Math.random().toString(36).slice(2);
-  const meta = JSON.stringify({ name, parents: [ids.inbox], mimeType: 'application/json' });
+  const meta = JSON.stringify({ name, parents: [fo.inbox], mimeType: 'application/json' });
   const data = JSON.stringify({ ...cmd, at: new Date().toISOString() });
   const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${data}\r\n--${boundary}--`;
   await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
@@ -272,12 +297,13 @@ $('#gbtn').onclick = () => {
 // ---------- Screens ----------
 let current = null, qOpen = false;
 function pcOnline() { return !!store.pc && Date.now() - new Date(store.pc.at) < OFFLINE_AFTER; }
+function winOnline(w) { return !!w && !w.closed && (Date.now() - new Date(w.updated) < OFFLINE_AFTER * 3 || (store.pc && store.pc.hosts && store.pc.hosts.includes(w.host))); }
 function stateColor(k) { return { busy: '#F08A3C', waiting: '#F08A3C', blocked: '#E5534B', offline: '#E5534B', safe: '#5CC97A', off: '#6E7580' }[k] || '#6E7580'; }
 function render() { if (current) renderWin(); else renderList(); }
 function renderList() {
   const on = pcOnline();
   $('#pcState').innerHTML = `<span class="dot" style="background:${on ? '#5CC97A' : '#E5534B'}"></span><span style="color:${on ? '#8FD19E' : '#F7B7B7'}">${on ? 'PC online' : 'PC offline'}</span>`;
-  $('#pcSub').textContent = store.pc ? `${store.pc.host || 'PC'} · ${on ? 'updated' : 'last seen'} ${hm(store.pc.at)}` : 'Looking for your PC…';
+  $('#pcSub').textContent = store.pc ? `${on ? ((store.pc.hosts && store.pc.hosts.length ? store.pc.hosts : [store.pc.host]).join(' · ') + ' online') : (store.pc.host || 'PC') + ' last seen ' + hm(store.pc.at)} · updated ${hm(store.pc.at)}` : 'Looking for your PC…';
   const need = (w) => (w.questions || []).filter((q) => q.needed).length;
   const wins = Object.values(store.wins).sort((a, b) => ((a.closed ? 1 : 0) - (b.closed ? 1 : 0)) || (need(b) - need(a)) || String(a.name).localeCompare(String(b.name)));
   const box = $('#wins'); box.innerHTML = '';
